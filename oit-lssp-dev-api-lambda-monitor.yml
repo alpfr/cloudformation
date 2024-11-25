@@ -1,0 +1,295 @@
+Parameters:
+  ExistingLambdaRoleArn:
+    Type: String
+    Description: ARN of existing Lambda execution role
+    Default: 'arn:aws-us-gov:iam::075085867188:role/stage-StageLambdaExecutionRole-govcloud'
+    AllowedPattern: '^arn:aws(-[a-z]+)*:iam::\d{12}:role/[a-zA-Z0-9+=,.@_-]+$'
+    ConstraintDescription: Must be a valid IAM role ARN
+
+  ApiId:
+    Type: String
+    Description: API Gateway REST API ID
+    Default: 'qes6cfvf4b'
+    AllowedPattern: '^[a-z0-9]+$'
+    ConstraintDescription: Must be a valid API Gateway REST API ID
+
+  ApiStageName:
+    Type: String
+    Description: API Gateway stage name
+    AllowedPattern: '^[a-zA-Z0-9_-]+$'
+    Default: 'dev'
+    ConstraintDescription: Must be a valid stage name
+
+  ApiPath:
+    Type: String
+    Description: API path to monitor (starting with /)
+    Default: '/update-s3-bucket'
+    AllowedPattern: '^\/[a-zA-Z0-9_\/-]*$'
+    ConstraintDescription: Must start with / and contain only alphanumeric characters, hyphens, and underscores
+
+  ExistingSnsTopicArn:
+    Type: String
+    Description: ARN of existing SNS topic for notifications
+    Default: 'arn:aws-us-gov:sns:us-gov-west-1:075085867188:oit-lssp-dev-sbs-awsconfig'
+    AllowedPattern: '^arn:aws(-[a-z]+)*:sns:[a-z0-9-]+:\d{12}:[a-zA-Z0-9-_]+$'
+    ConstraintDescription: Must be a valid SNS topic ARN
+
+  Environment:
+    Type: String
+    Description: Environment name (e.g., dev, test, prod)
+    AllowedValues:
+    - dev
+    - test
+    - stage
+    - prod
+    Default: dev
+
+  ApplicationName:
+    Type: String
+    Description: Name of the application
+    Default: api-monitor
+    MinLength: 1
+    MaxLength: 128
+    AllowedPattern: '^[a-zA-Z0-9-_]+$'
+    ConstraintDescription: Must contain only alphanumeric characters, hyphens and underscores
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where Lambda function will be deployed
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: List of security group IDs for the Lambda function
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs where Lambda function will be deployed (minimum 2 recommended)
+
+Conditions:
+  HasVpcConfig: !Not [ !Equals [ !Ref VpcId, "" ] ]
+
+Resources:
+  # Lambda Function
+  ApiCallLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ApiCallFunction
+      Handler: index.lambda_handler
+      Role: !Ref ExistingLambdaRoleArn
+      Runtime: python3.9
+      Timeout: 30
+      MemorySize: 256
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds: !Split [ ",", !Join [ ",", !Ref SubnetIds ] ]
+          SecurityGroupIds: !Split [ ",", !Join [ ",", !Ref SecurityGroupIds ] ]
+        - !Ref AWS::NoValue
+
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref ExistingSnsTopicArn
+          API_ID: !Ref ApiId
+          API_STAGE: !Ref ApiStageName
+          API_PATH: !Ref ApiPath
+          ENVIRONMENT: !Ref Environment
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+      - Key: Name
+        Value: !Sub ${ApplicationName}-api-monitor
+      - Key: Function
+        Value: API Health Check
+      - Key: CreatedBy
+        Value: CloudFormation
+      - Key: VPC
+        Value: !Ref VpcId
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          from datetime import datetime
+
+          # Initialize AWS clients
+          apigateway = boto3.client('apigateway')
+          sns_client = boto3.client('sns')
+
+          # Get environment variables
+          SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+          API_ID = os.environ['API_ID']
+          API_STAGE = os.environ['API_STAGE']
+          API_PATH = os.environ['API_PATH']
+          ENVIRONMENT = os.environ['ENVIRONMENT']
+
+          def send_notification(subject, message):
+              """Helper function to send SNS notifications"""
+              try:
+                  sns_client.publish(
+                      TopicArn=SNS_TOPIC_ARN,
+                      Message=message,
+                      Subject=f"[{ENVIRONMENT.upper()}] {subject}"
+                  )
+              except Exception as e:
+                  print(f"Failed to send SNS notification: {str(e)}")
+
+          def lambda_handler(event, context):
+              """Lambda handler function"""
+              timestamp = datetime.utcnow().isoformat()
+              
+              params = {
+                  'restApiId': API_ID,
+                  'stageName': API_STAGE,
+                  'methodName': 'GET',
+                  'pathWithQueryString': API_PATH,
+              }
+              
+              try:
+                  # Execute API call
+                  response = apigateway.test_invoke_method(**params)
+                  
+                  # Check response status
+                  if response['status'] != 200:
+                      error_message = (
+                          f"Environment: {ENVIRONMENT.upper()}\n"
+                          f"API call failed at {timestamp}\n"
+                          f"Status Code: {response['status']}\n"
+                          f"Response Body: {response['body']}\n"
+                          f"API ID: {API_ID}\n"
+                          f"Stage: {API_STAGE}\n"
+                          f"Path: {API_PATH}"
+                      )
+                      send_notification(
+                          "API Call Failed",
+                          error_message
+                      )
+                      
+                      return {
+                          'statusCode': response['status'],
+                          'headers': {
+                              'Content-Type': 'application/json'
+                          },
+                          'body': json.dumps({
+                              'error': 'API call failed',
+                              'details': response['body'],
+                              'timestamp': timestamp,
+                              'environment': ENVIRONMENT
+                          })
+                      }
+                  
+                  # Success response
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Content-Type': 'application/json'
+                      },
+                      'body': response['body']
+                  }
+                  
+              except apigateway.exceptions.ClientError as e:
+                  error_message = (
+                      f"Environment: {ENVIRONMENT.upper()}\n"
+                      f"API Gateway client error at {timestamp}\n"
+                      f"Error: {str(e)}\n"
+                      f"API ID: {API_ID}\n"
+                      f"Stage: {API_STAGE}\n"
+                      f"Path: {API_PATH}"
+                  )
+                  send_notification(
+                      "API Gateway Client Error",
+                      error_message
+                  )
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({
+                          'error': 'API Gateway client error',
+                          'details': str(e),
+                          'timestamp': timestamp,
+                          'environment': ENVIRONMENT
+                      })
+                  }
+                  
+              except Exception as e:
+                  error_message = (
+                      f"Environment: {ENVIRONMENT.upper()}\n"
+                      f"Unexpected error at {timestamp}\n"
+                      f"Error: {str(e)}\n"
+                      f"API ID: {API_ID}\n"
+                      f"Stage: {API_STAGE}\n"
+                      f"Path: {API_PATH}"
+                  )
+                  send_notification(
+                      "Unexpected Error",
+                      error_message
+                  )
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({
+                          'error': 'Internal server error',
+                          'details': str(e),
+                          'timestamp': timestamp,
+                          'environment': ENVIRONMENT
+                      })
+                  }
+
+  # CloudWatch Alarm for Lambda Errors
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Environment}-ApiCallLambdaErrors
+      AlarmDescription: !Sub "Alert when Lambda function encounters errors in ${Environment} environment"
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref ApiCallLambdaFunction
+      AlarmActions:
+      - !Ref ExistingSnsTopicArn
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+      - Key: Name
+        Value: !Sub ${ApplicationName}-api-monitor-alarm
+      - Key: Resource
+        Value: CloudWatch Alarm
+      - Key: CreatedBy
+        Value: CloudFormation
+
+Outputs:
+  LambdaFunctionArn:
+    Value: !GetAtt ApiCallLambdaFunction.Arn
+    Description: Lambda function ARN
+
+  LambdaFunctionName:
+    Value: !Ref ApiCallLambdaFunction
+    Description: Lambda function name
+
+  ApiDetails:
+    Value: !Sub "API ID: ${ApiId}, Stage: ${ApiStageName}, Path: ${ApiPath}"
+    Description: API Gateway configuration
+
+  NotificationTopicArn:
+    Value: !Ref ExistingSnsTopicArn
+    Description: SNS topic ARN used for notifications
+
+  Environment:
+    Value: !Ref Environment
+    Description: Deployment environment
+
+  ApplicationName:
+    Value: !Ref ApplicationName
+    Description: Application name

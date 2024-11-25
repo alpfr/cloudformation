@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Role for AWS Glue Service with Enhanced Access in AWS GovCloud'
+
+Parameters:
+  UseExistingRole:
+    Type: String
+    Description: Specify whether to attach an existing IAM role (true/false)
+    AllowedValues:
+    - "true"
+    - "false"
+    Default: "false"
+
+  ExistingRoleArn:
+    Type: String
+    Description: ARN of the existing IAM role to attach
+    Default: ""
+    AllowedPattern: '^arn:aws-us-gov:iam::[0-9]{12}:role/.*$|^$'
+
+  Environment:
+    Type: String
+    Description: Environment name (e.g., dev, stg, prod)
+    AllowedValues:
+    - dev
+    - stg
+    - prod
+    Default: dev
+
+  ProjectName:
+    Type: String
+    Description: Name of the project
+    Default: 'lssp10'
+
+  ApplicationName:
+    Type: String
+    Description: Name of the application
+    Default: GlueDeployent
+
+  ProjectOwner:
+    Type: String
+    Description: Email or name of the project owner
+    Default: Daniel Shamar
+
+Conditions:
+  AttachExistingRole: !Equals [ !Ref UseExistingRole, "true" ]
+
+Resources:
+  GlueServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${ProjectName}-GlueServiceRole-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: glue.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws-us-gov:iam::aws:policy/service-role/AWSGlueServiceRole
+      - !If
+        - AttachExistingRole
+        - !Ref ExistingRoleArn
+        - !Ref "AWS::NoValue"
+      Tags:
+      - Key: Environment
+        Value: !Sub '${Environment}'
+      - Key: ProjectName
+        Value: !Sub '${ProjectName}'
+      - Key: ApplicationName
+        Value: !Sub '${ApplicationName}'
+      - Key: ProjectOwner
+        Value: !Sub '${ProjectOwner}'
+      - Key: CreatedBy
+        Value: CloudFormation
+      - Key: StackName
+        Value: !Ref 'AWS::StackName'
+      Policies:
+      - PolicyName: GlueS3Access
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:ListBucket
+            - s3:GetBucketLocation
+            - s3:ListBucketVersions
+            - s3:GetLifecycleConfiguration
+            - s3:GetBucketPolicy
+            - s3:GetObjectTagging
+            Resource:
+            - 'arn:aws-us-gov:s3:::*' # All buckets
+            - 'arn:aws-us-gov:s3:::*/*' # All objects in all buckets
+
+      - PolicyName: GlueRDSAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - rds-db:connect
+            - rds:DescribeDBInstances
+            - rds:DescribeDBClusters
+            - rds-data:BatchExecuteStatement
+            - rds-data:BeginTransaction
+            - rds-data:CommitTransaction
+            - rds-data:ExecuteStatement
+            - rds-data:RollbackTransaction
+            Resource:
+            - arn:aws:rds:*:*:db:*
+            - arn:aws:rds:*:*:cluster:*
+
+      - PolicyName: GlueKMSAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - kms:Decrypt
+            - kms:DescribeKey
+            - kms:Encrypt
+            - kms:GenerateDataKey
+            - kms:GenerateDataKeyWithoutPlaintext
+            - kms:ReEncrypt*
+            Resource: 'arn:aws-us-gov:kms:*:*:key/*' # All KMS keys in GovCloud
+          - Effect: Allow
+            Action:
+            - kms:ListKeys
+            - kms:ListAliases
+            Resource: '*' # Global permissions for listing keys and aliases
+      - PolicyName: GlueCloudWatchAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:PutRetentionPolicy
+            Resource: 'arn:aws-us-gov:logs:*:*:log-group:/aws-glue/*'
+      - PolicyName: GlueSecretsManagerAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            - secretsmanager:DescribeSecret
+            Resource: 'arn:aws-us-gov:secretsmanager:*:*:secret:*'
+
+Outputs:
+  GlueServiceRoleARN:
+    Description: ARN of the created Glue Service Role
+    Value: !GetAtt GlueServiceRole.Arn

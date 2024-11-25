@@ -1,0 +1,319 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Security: KMS customer managed CMK for AWS services with enhanced
+  security and monitoring'
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+    - Label:
+        default: 'Environment Configuration'
+      Parameters:
+      - Environment
+      - ResourceName
+      - ResourceDescription
+    - Label:
+        default: 'Parent Stacks'
+      Parameters:
+      - ParentAlertStack
+    - Label:
+        default: 'KMS Parameters'
+      Parameters:
+      - Service
+      - KeySpec
+      - KeyUsage
+      - EnableKeyRotation
+      - PendingWindowInDays
+
+Parameters:
+  Environment:
+    Description: 'Environment (e.g., dev, prod, staging)'
+    Type: String
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+    - test
+    Default: dev
+  ResourceName:
+    Description: 'Name for the KMS key'
+    Type: String
+    Default: 'default-kms-key'
+    MinLength: 1
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-_]+$'
+    ConstraintDescription: 'Resource name must contain only alphanumeric characters,
+      hyphens, or underscores'
+  ResourceDescription:
+    Description: 'Description for the KMS key'
+    Type: String
+    Default: 'Default KMS key for AWS services'
+    MaxLength: 256
+  ParentAlertStack:
+    Description: 'Optional but recommended stack name of parent alert stack based on
+      operations/alert.yaml template.'
+    Type: String
+    Default: ''
+  Service:
+    Description: 'Which AWS service is allowed to use this CMK'
+    Type: String
+    AllowedValues:
+    - 'ALL_SERVICES'
+    - 'S3_PUBLIC_ACCESS'
+    - 'ROUTE53_DNSSEC'
+    - 'CLOUDTRAIL'
+    - 'CLOUDFRONT'
+    - 'DYNAMODB'
+    - 'EBS'
+    - 'connect'
+    - 'dms'
+    - 'ssm'
+    - 'ec2'
+    - 'elasticfilesystem'
+    - 'es'
+    - 'kinesis'
+    - 'kinesisvideo'
+    - 'lambda'
+    - 'lex'
+    - 'redshift'
+    - 'rds'
+    - 'secretsmanager'
+    - 'ses'
+    - 's3'
+    - 'sqs'
+    - 'workmail'
+    - 'workspaces'
+    Default: ALL_SERVICES
+  KeySpec:
+    Description: 'Specify the type of the CMK'
+    Type: String
+    AllowedValues:
+    - SYMMETRIC_DEFAULT
+    - RSA_2048
+    - RSA_3072
+    - RSA_4096
+    - ECC_NIST_P256
+    - ECC_NIST_P384
+    - ECC_NIST_P521
+    - ECC_SECG_P256K1
+    Default: SYMMETRIC_DEFAULT
+  KeyUsage:
+    Description: 'Cryptographic operations that the CMK supports'
+    Type: String
+    AllowedValues:
+    - ENCRYPT_DECRYPT
+    - SIGN_VERIFY
+    Default: ENCRYPT_DECRYPT
+  EnableKeyRotation:
+    Description: 'Enable automatic key rotation (only for symmetric keys)'
+    Type: String
+    AllowedValues: [ 'true', 'false' ]
+    Default: 'true'
+  PendingWindowInDays:
+    Description: 'Waiting period in days before deleting the CMK (7-30 days)'
+    Type: Number
+    MinValue: 7
+    MaxValue: 30
+    Default: 30
+
+Conditions:
+  HasAlertTopic: !Not [ !Equals [ !Ref ParentAlertStack, '' ] ]
+  HasSymmetricKey: !Equals [ !Ref KeySpec, 'SYMMETRIC_DEFAULT' ]
+  IsProductionEnvironment: !Equals [ !Ref Environment, 'prod' ]
+  IsAllServices: !Equals [ !Ref Service, 'ALL_SERVICES' ]
+  IsS3Service: !Equals [ !Ref Service, 's3' ]
+  IsCloudTrailService: !Equals [ !Ref Service, 'CLOUDTRAIL' ]
+  IsSecretsManagerService: !Equals [ !Ref Service, 'secretsmanager' ]
+
+Resources:
+  Key:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: 'AWS::KMS::Key'
+    Properties:
+      Description: !Sub '${ResourceDescription} - ${Environment} environment -
+        GovCloud (US-West-1)'
+      EnableKeyRotation: !If [ HasSymmetricKey, !Ref EnableKeyRotation, false ]
+      KeySpec: !Ref KeySpec
+      KeyUsage: !Ref KeyUsage
+      PendingWindowInDays: !If [ IsProductionEnvironment, 30, !Ref PendingWindowInDays ]
+      Tags:
+      - Key: Name
+        Value: !Sub '${Environment}-${ResourceName}'
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Description
+        Value: !Ref ResourceDescription
+      - Key: Service
+        Value: !Ref Service
+      - Key: CreatedBy
+        Value: !Sub '${AWS::StackName}'
+      - Key: ManagedBy
+        Value: 'CloudFormation'
+      - Key: Region
+        Value: 'us-gov-west-1'
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: EnableRootAccountAccess
+          Effect: Allow
+          Principal:
+            AWS: !Sub 'arn:aws-us-gov:iam::${AWS::AccountId}:root'
+          Action: 'kms:*'
+          Resource: '*'
+
+        - !If
+          - IsAllServices
+          - Sid: AllowAllServicesInAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws-us-gov:iam::${AWS::AccountId}:root'
+            Action:
+            - 'kms:Encrypt'
+            - 'kms:Decrypt'
+            - 'kms:ReEncrypt*'
+            - 'kms:GenerateDataKey*'
+            - 'kms:CreateGrant'
+            - 'kms:ListGrants'
+            - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:CallerAccount': !Ref 'AWS::AccountId'
+          - !Ref 'AWS::NoValue'
+
+        - !If
+          - IsS3Service
+          - Sid: AllowS3ServiceAccess
+            Effect: Allow
+            Principal:
+              Service: 's3.us-gov-west-1.amazonaws.com'
+            Action:
+            - 'kms:Encrypt'
+            - 'kms:Decrypt'
+            - 'kms:ReEncrypt*'
+            - 'kms:GenerateDataKey*'
+            - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': 's3.us-gov-west-1.amazonaws.com'
+          - !Ref 'AWS::NoValue'
+
+        - !If
+          - IsCloudTrailService
+          - Sid: AllowCloudTrailAccess
+            Effect: Allow
+            Principal:
+              Service: 'cloudtrail.us-gov-west-1.amazonaws.com'
+            Action:
+            - 'kms:GenerateDataKey*'
+            - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringLike:
+                'kms:EncryptionContext:aws:cloudtrail:arn': !Sub 'arn:aws-us-gov:cloudtrail:*:${AWS::AccountId}:trail/*'
+          - !Ref 'AWS::NoValue'
+
+        - !If
+          - IsSecretsManagerService
+          - Sid: AllowSecretsManagerAccess
+            Effect: Allow
+            Principal:
+              Service: 'secretsmanager.us-gov-west-1.amazonaws.com'
+            Action:
+            - 'kms:Encrypt'
+            - 'kms:Decrypt'
+            - 'kms:ReEncrypt*'
+            - 'kms:GenerateDataKey*'
+            - 'kms:CreateGrant'
+            - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': 'secretsmanager.us-gov-west-1.amazonaws.com'
+          - !Ref 'AWS::NoValue'
+
+  KeyAlias:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub 'alias/${Environment}/${ResourceName}'
+      TargetKeyId: !Ref Key
+
+  DeletionNotification:
+    Condition: HasAlertTopic
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventPattern:
+        source:
+        - 'aws.kms'
+        detail-type:
+        - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+          - 'kms.amazonaws.com'
+          eventName:
+          - ScheduleKeyDeletion
+          - DisableKey
+          requestParameters:
+            keyId:
+            - !GetAtt Key.Arn
+      State: ENABLED
+      Targets:
+      - Arn: { 'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN' }
+        Id: 'DeleteKeyNotification'
+
+  KeyUsageAlarm:
+    Condition: HasAlertTopic
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: !Sub 'Monitor KMS key usage for ${Environment}/${ResourceName}
+        in GovCloud (US-West-1)'
+      MetricName: 'KeyUsage'
+      Namespace: 'AWS/KMS'
+      Statistic: 'Sum'
+      Period: 300
+      EvaluationPeriods: 1
+      ThresholdMetricId: 'e1'
+      ComparisonOperator: 'GreaterThanThreshold'
+      Threshold: !If [ IsProductionEnvironment, 5000, 1000 ]
+      AlarmActions:
+      - { 'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN' }
+      Dimensions:
+      - Name: KeyId
+        Value: !Ref Key
+
+Outputs:
+  TemplateID:
+    Description: 'cloudonaut.io template id.'
+    Value: 'security/kms-key'
+  StackName:
+    Description: 'Stack name.'
+    Value: !Sub '${AWS::StackName}'
+  Environment:
+    Description: 'Environment name.'
+    Value: !Ref Environment
+  ResourceName:
+    Description: 'Resource name.'
+    Value: !Ref ResourceName
+  KeyId:
+    Description: 'Key id.'
+    Value: !Ref Key
+    Export:
+      Name: !Sub '${AWS::StackName}-${Environment}-KeyId'
+  KeyArn:
+    Description: 'Key ARN.'
+    Value: !GetAtt 'Key.Arn'
+    Export:
+      Name: !Sub '${AWS::StackName}-${Environment}-KeyArn'
+  KeyAlias:
+    Description: 'Key Alias.'
+    Value: !Ref KeyAlias
+    Export:
+      Name: !Sub '${AWS::StackName}-${Environment}-KeyAlias'
+  KeyAliasArn:
+    Description: 'Key Alias ARN.'
+    Value: !Sub 'arn:aws-us-gov:kms:${AWS::Region}:${AWS::AccountId}:${KeyAlias}'
+    Export:
+      Name: !Sub '${AWS::StackName}-${Environment}-KeyAliasArn'

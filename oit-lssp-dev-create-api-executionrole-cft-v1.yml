@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Roles for API Gateway and Lambda with CloudWatch and X-Ray access in AWS GovCloud (US-West)'
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Environment name
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+    Default: dev
+
+  ApplicationName:
+    Type: String
+    Description: Name of the application
+    Default: 'api-executionrole'
+    MinLength: 10
+
+  ProjectName:
+    Type: String
+    Description: Name of the project
+    MinLength: 3
+
+  ProjectOwner:
+    Type: String
+    Description: Owner of the project
+    MinLength: 5
+
+Mappings:
+  RegionMap:
+    us-gov-west-1:
+      APIGatewayEndpoint: apigateway.us-gov-west-1.amazonaws.com
+      LambdaEndpoint: lambda.us-gov-west-1.amazonaws.com
+      XRayPolicy: arn:aws-us-gov:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+Resources:
+  APIGatewayMonitoringRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub ${Environment}-${ApplicationName}-apigw-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: !FindInMap [ RegionMap, !Ref 'AWS::Region', APIGatewayEndpoint ]
+          Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - !FindInMap [ RegionMap, !Ref 'AWS::Region', XRayPolicy ]
+      Policies:
+      - PolicyName: !Sub ${Environment}-${ApplicationName}-cloudwatch-access
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'cloudwatch:PutMetricData'
+            - 'cloudwatch:GetMetricData'
+            - 'cloudwatch:GetMetricStatistics'
+            - 'cloudwatch:ListMetrics'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - 'logs:CreateLogGroup'
+            - 'logs:CreateLogStream'
+            - 'logs:PutLogEvents'
+            - 'logs:DescribeLogStreams'
+            - 'logs:GetLogEvents'
+            Resource: !Sub arn:aws-us-gov:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/${ApplicationName}-${Environment}:*
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: ApplicationName
+        Value: !Ref ApplicationName
+      - Key: ProjectName
+        Value: !Ref ProjectName
+      - Key: ProjectOwner
+        Value: !Ref ProjectOwner
+      - Key: CreatedBy
+        Value: CloudFormation
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub ${Environment}-${ApplicationName}-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: !FindInMap [ RegionMap, !Ref 'AWS::Region', LambdaEndpoint ]
+          Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - !FindInMap [ RegionMap, !Ref 'AWS::Region', XRayPolicy ]
+      - arn:aws-us-gov:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: !Sub ${Environment}-${ApplicationName}-lambda-custom-policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'logs:CreateLogGroup'
+            - 'logs:CreateLogStream'
+            - 'logs:PutLogEvents'
+            Resource: !Sub arn:aws-us-gov:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ApplicationName}-${Environment}*:*
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: ApplicationName
+        Value: !Ref ApplicationName
+      - Key: ProjectName
+        Value: !Ref ProjectName
+      - Key: ProjectOwner
+        Value: !Ref ProjectOwner
+      - Key: CreatedBy
+        Value: CloudFormation
+
+Outputs:
+  APIGatewayRoleARN:
+    Description: 'ARN of created API Gateway IAM Role'
+    Value: !GetAtt APIGatewayMonitoringRole.Arn
+  LambdaRoleARN:
+    Description: 'ARN of created Lambda Execution Role'
+    Value: !GetAtt LambdaExecutionRole.Arn

@@ -1,0 +1,224 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to create VPC endpoints for AWS services with comprehensive tagging strategy
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VPCId
+          - SubnetIds
+          - SecurityGroupIds
+          - EnableDNSHostnames
+
+      - Label:
+          default: "Endpoint Configuration"
+        Parameters:
+          - S3EndpointPolicy
+
+      - Label:
+          default: "Resource Tagging"
+        Parameters:
+          - Environment
+          - ProjectName
+          - ApplicationName
+          - ProjectOwner
+          - CostCenter
+          - Backup
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: The ID of the VPC where the endpoints will be created
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: The subnet IDs in which to create the endpoints
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: The security group IDs to associate with the endpoints
+
+  EnableDNSHostnames:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable DNS hostnames for interface endpoints
+
+  S3EndpointPolicy:
+    Type: String
+    Default: 'readonly'
+    AllowedValues:
+      - 'readonly'
+      - 'readwrite'
+    Description: Access level for S3 endpoint - readonly or readwrite
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - 'dev'
+      - 'test'
+      - 'stage'
+      - 'prod'
+    Description: Environment name for the resources
+
+  ProjectName:
+    Type: String
+    Description: Name of the project
+
+  ApplicationName:
+    Type: String
+    Description: Name of the application
+
+  ProjectOwner:
+    Type: String
+    Description: Email or name of the project owner
+
+  CostCenter:
+    Type: String
+    Description: Cost center for billing purposes
+
+  Backup:
+    Type: String
+    AllowedValues:
+      - 'yes'
+      - 'no'
+    Default: 'yes'
+    Description: Whether the resource needs to be backed up
+
+Resources:
+  # S3 Gateway Endpoint
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - "s3:*"
+            Resource: "*"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ProjectName
+          Value: !Ref ProjectName
+
+  # Interface Endpoints
+  InterfaceEndpoints:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      ServiceName:
+        Fn::Join:
+          - ""
+          - - "com.amazonaws."
+            - !Ref "AWS::Region"
+            - "."
+            - !Ref EndpointService
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+      Tags:
+        - Key: Environment
+          Value: 
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ProjectName
+          Value: !Ref ProjectName
+        - Key: ApplicationName
+          Value: !Ref ApplicationName
+        - Key: ProjectOwner
+          Value: !Ref ProjectOwner
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Backup
+          Value: !Ref Backup
+
+  # EC2 Interface Endpoint
+  EC2Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ProjectName
+          Value: !Ref ProjectName
+
+  # RDS Interface Endpoint
+  RDSEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.rds"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ProjectName
+          Value: !Ref ProjectName
+
+  # SFTP Transfer Interface Endpoint
+  SFTPTransferEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.transfer"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ProjectName
+          Value: !Ref ProjectName
+
+  # API Gateway Interface Endpoint
+  APIGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.execute-api"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ProjectName
+          Value: !Ref ProjectName
+
+  # Lambda Interface Endpoint
+  LambdaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.lambda"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ProjectName
+          Value: !Ref ProjectName

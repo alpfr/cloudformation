@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS CloudFormation template for SFTP server using existing VPC, subnets, S3 bucket, and IAM role in AWS GovCloud'
+
+Parameters:
+  ExistingVPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID of the existing VPC
+
+  ExistingPrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the first existing private subnet
+
+  ExistingSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ID of the existing security group to use for the SFTP server
+
+  ExistingPrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the second existing private subnet
+
+  ExistingS3BucketName:
+    Type: String
+    Default: 'a-usw2-prod-oit-lssp10-daba-sftp-000-lssp'
+    Description: Name of the existing S3 bucket for SFTP storage
+
+  ExistingIAMRoleARN:
+    Type: String
+    Default: 'arn:aws-us-gov:iam::218866388513:role/OIT-LSSP-PROD-S3-BUCKET-ROLE'
+    Description: ARN of the existing IAM role for SFTP users
+
+
+Resources:
+  # AWS Transfer Family SFTP Server
+  SftpServer:
+    Type: AWS::Transfer::Server
+    Properties:
+      EndpointType: VPC
+      EndpointDetails:
+        SubnetIds:
+        - !Ref ExistingPrivateSubnet1Id
+        - !Ref ExistingPrivateSubnet2Id
+        VpcId: !Ref ExistingVPCId
+        SecurityGroupIds:
+        - !Ref ExistingSecurityGroupId
+      IdentityProviderType: SERVICE_MANAGED
+      Protocols:
+      - SFTP
+      SecurityPolicyName: TransferSecurityPolicy-2020-06
+      LoggingRole: !GetAtt SftpLogRole.Arn
+      Tags:
+      - Key: Name
+        Value: SFTP-Server
+
+  # IAM Role for SFTP Server Logging
+  SftpLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: transfer.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws-us-gov:iam::aws:policy/service-role/AWSTransferLoggingAccess
+      - arn:aws-us-gov:iam::aws:policy/AWSTransferFullAccess
+      - arn:aws-us-gov:iam::aws:policy/service-role/AmazonDMSCloudWatchLogsRole
+
+Outputs:
+  SftpServerEndpoint:
+    Description: Endpoint for SFTP server
+    Value: !GetAtt SftpServer.ServerId
+  UsedS3BucketName:
+    Description: Name of the existing S3 bucket used for SFTP storage
+    Value: !Ref ExistingS3BucketName
+  UsedIAMRoleARN:
+    Description: ARN of the existing IAM role used for SFTP users
+    Value: !Ref ExistingIAMRoleARN
+  UsedVPCId:
+    Description: ID of the existing VPC used
+    Value: !Ref ExistingVPCId
+  UsedPrivateSubnet1Id:
+    Description: ID of the first existing private subnet used
+    Value: !Ref ExistingPrivateSubnet1Id
+  UsedPrivateSubnet2Id:
+    Description: ID of the second existing private subnet used
+    Value: !Ref ExistingPrivateSubnet2Id

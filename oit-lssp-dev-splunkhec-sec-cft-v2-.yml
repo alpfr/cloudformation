@@ -1,0 +1,301 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to create a Network Load Balancer with CloudWatch Logs
+Parameters:
+  SplunkUrl:
+    Description: >-
+      The full Splunk HEC URL (e.g., https://splunk.example.com:8088/services/collector)
+    Type: String
+    Default: 'https://162.138.206.49:8088/services/collector'
+  SplunkHECToken:
+    Description: Splunk HTTP Event Collector (HEC) Token
+    Type: String
+    NoEcho: true
+    Default: 67892b54-ba53-4187-9ecb-8bf3dc54a2e9
+  SplunkIndex:
+    Description: The Splunk Index where logs should be forwarded
+    Type: String
+    Default: 'splunk_demo'
+  SplunkSource:
+    Description: The source identifier for Splunk
+    Type: String
+    Default: '/var/log/audit'
+  SplunkSourceType:
+    Description: Splunk source type with splunk
+    Type: String
+    Default: unknow
+  SplunkLambdaProject:
+    Description: Enter in the project for the lambda function.
+    Type: String
+    Default: projectname
+  SplunkLambdaApplicationName:
+    Description: Enter in the application for the lambda function
+    Type: String
+    Default: lambda
+  SplunkLambdaPurpose:
+    Description: >-
+      Enter in the purpose for the lambda function. Used to build name of the function
+    Type: String
+    Default: ec2instancetosplunk
+  SplunkAppGroup:
+    Description: >-
+      Enter in the purpose for the lambda function. Used to build name of the function
+    Type: String
+    Default: appl
+  LogGroup:
+    Description: The name of the existing CloudWatch logs are stored
+    Type: String
+    Default: /linux/var/audit
+  LifeCycle:
+    Description: The name of the existing CloudWatch logs are stored
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - stage
+    - uat
+    - test
+    - prod
+  VPCList:
+    Description: The list of VPCs to associate with the Lambda function
+    Type: 'AWS::EC2::VPC::Id'
+  SubnetList:
+    Description: The list of subnets in the VPC for the Lambda function
+    Type: 'List<AWS::EC2::Subnet::Id>'
+  SplunkSecurityGroup:
+    Type: String
+    Description: Splunk HEC Egress
+    Default: sg-0d303a0fb5d669527
+    #Type: List<AWS::EC2::SecurityGroup::Id>
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+    - Label:
+        default: Lambda Configuration
+      Parameters:
+      - VPCList
+      - SubnetList
+      - LifeCycle
+    - Label:
+        default: Splunk Requirements
+      Parameters:
+      - SplunkUrl
+      - SplunkHECToken
+      - SplunkIndex
+      - SplunkSource
+      - SplunkLambdaProject
+      - SplunkLambdaApplicationName
+      - SplunkLambdaPurpose
+      - SplunkAppGroup
+      - LogGroup
+Resources:
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'oit-gusw1-lambda-ExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+      - >-
+        arn:aws-us-gov:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      - 'arn:aws-us-gov:iam::aws:policy/AmazonS3ReadOnlyAccess'
+  SplunkLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+import boto3
+import json
+import os
+import requests
+from datetime import datetime, timedelta
+import logging
+
+# Initialize CloudWatch Logs client and logger
+cloudwatch_logs = boto3.client('logs')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Splunk HEC configuration
+SPLUNK_HEC_URL = os.environ['SPLUNK_HEC_URL']
+SPLUNK_HEC_TOKEN = os.environ['SPLUNK_HEC_TOKEN']
+SPLUNK_INDEX = os.environ['SPLUNK_INDEX']
+SPLUNK_SOURCE = 'aws:transfer:workflow'
+
+# CloudWatch Log Group for AWS Transfer Family
+LOG_GROUP_NAME = '/aws/transfer/your-transfer-server-id'  # Replace with your actual server ID
+
+# Constants
+BATCH_SIZE = 100  # Max number of events to send to Splunk in one batch
+MAX_RETRIES = 3   # Number of retries for network requests
+
+def lambda_handler(event, context):
+    try:
+        # Calculate the start time for log retrieval (e.g., last 5 minutes)
+        start_time = int((datetime.now() - timedelta(minutes=5)).timestamp() * 1000)
+        end_time = int(datetime.now().timestamp() * 1000)
+
+        # Get log streams
+        log_streams = cloudwatch_logs.describe_log_streams(
+            logGroupName=LOG_GROUP_NAME,
+            orderBy='LastEventTime',
+            descending=True
+        )['logStreams']
+
+        for stream in log_streams:
+            stream_name = stream['logStreamName']
+
+            # Get log events
+            log_events = cloudwatch_logs.get_log_events(
+                logGroupName=LOG_GROUP_NAME,
+                logStreamName=stream_name,
+                startTime=start_time,
+                endTime=end_time,
+                limit=10000  # Optional: Adjust this to handle large logs
+            )['events']
+
+            if not log_events:
+                logger.info(f"No new log events found for stream {stream_name}")
+                continue
+
+            # Prepare events for Splunk in batches
+            splunk_events = []
+            for event in log_events:
+                parsed_event = parse_transfer_family_log(event['message'])
+                if parsed_event:
+                    splunk_event = {
+                        "time": event['timestamp'] / 1000,  # Convert to seconds
+                        "host": LOG_GROUP_NAME,
+                        "source": SPLUNK_SOURCE,
+                        "sourcetype": "aws:transfer:workflow",
+                        "index": SPLUNK_INDEX,
+                        "event": parsed_event
+                    }
+                    splunk_events.append(splunk_event)
+
+                # Send to Splunk in batches
+                if len(splunk_events) >= BATCH_SIZE:
+                    send_to_splunk(splunk_events)
+                    splunk_events = []
+
+            # Send remaining events if any
+            if splunk_events:
+                send_to_splunk(splunk_events)
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps('AWS Transfer Family workflow log forwarding to Splunk completed successfully')
+        }
+
+    except Exception as e:
+        logger.error(f"Error processing AWS Transfer Family logs: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f"Error: {str(e)}")
+        }
+
+def parse_transfer_family_log(log_message):
+    try:
+        log_data = json.loads(log_message)
+
+        parsed_event = {
+            "type": log_data.get("type"),
+            "workflowId": log_data.get("workflowId"),
+            "executionId": log_data.get("executionId"),
+            "stepType": log_data.get("details", {}).get("stepType"),
+            "stepName": log_data.get("details", {}).get("stepName"),
+            "serverId": log_data.get("transferDetails", {}).get("serverId"),
+            "username": log_data.get("transferDetails", {}).get("username"),
+            "sessionId": log_data.get("transferDetails", {}).get("sessionId")
+        }
+
+        # Add output details if present
+        output = log_data.get("details", {}).get("output")
+        if output:
+            parsed_event["output"] = json.dumps(output)
+
+        return parsed_event
+    except json.JSONDecodeError:
+        logger.error(f"Failed to parse log message: {log_message}")
+        return None
+
+def send_to_splunk(events):
+    headers = {
+        "Authorization": f"Splunk {SPLUNK_HEC_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = json.dumps(events)
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.post(SPLUNK_HEC_URL, headers=headers, data=payload, verify=False)
+
+            if response.status_code == 200:
+                logger.info(f"Successfully sent {len(events)} AWS Transfer Family workflow events to Splunk")
+                return
+            else:
+                logger.error(f"Failed to send data to Splunk. Status code: {response.status_code}, Response: {response.text}")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error sending data to Splunk (attempt {attempt + 1}): {e}")
+
+        # Retry after a short delay for transient errors
+        if attempt < MAX_RETRIES - 1:
+            logger.info("Retrying in 2 seconds...")
+            time.sleep(2)
+
+    logger.error("Max retries exceeded. Failed to send logs to Splunk.")
+
+# For local testing
+if __name__ == "__main__":
+    lambda_handler(None, None)
+
+      Runtime: python3.8
+      Timeout: 30
+      VpcConfig:
+        SubnetIds: !Ref SubnetList
+        SecurityGroupIds:
+        - !Ref SplunkSecurityGroup
+        - !Ref SplunkEgressSecurityGroup
+      Environment:
+        Variables:
+          SPLUNK_URL: !Ref SplunkUrl
+          SPLUNK_HEC_TOKEN: !Ref SplunkHECToken
+          SPLUNK_INDEX: !Sub '${SplunkIndex}'
+          SPLUNK_SOURCETYPE: !Sub '${SplunkSourceType}'
+          SPLUNK_SOURCE: !Ref SplunkSource
+      MemorySize: 128
+  SplunkEgressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPCList
+      GroupDescription: Allow CloudWatch Log forward lambda to Splunk HEC
+      GroupName: SplunkHecEgress
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        Description: Splunk HEC endpoint
+        FromPort: 8088
+        ToPort: 8088
+        CidrIp: 162.138.206.49/23
+  LambdaSubscription:
+    Type: 'AWS::Logs::SubscriptionFilter'
+    DependsOn: LambdaInvokePermission
+    Properties:
+      DestinationArn: !Sub '${SplunkLambdaFunction.Arn}'
+      FilterPattern: ''
+      LogGroupName: !Sub '${LogGroup}'
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Sub '${SplunkLambdaFunction.Arn}'
+      Action: 'lambda:InvokeFunction'
+      Principal: logs.amazonaws.com
+      SourceArn: !Sub 'arn:aws-us-gov:logs:us-gov-west-1:075085867188:log-group:${LogGroup}:*'

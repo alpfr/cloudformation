@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template to forward AWS CloudTrail logs to Splunk HEC'
+
+Parameters:
+  SplunkHECUrl:
+    Type: String
+    Description: 'Splunk HEC URL (e.g., https://splunk.example.com:8088/services/collector)'
+    Default: 'https://162.138.206.49:8088/services/collector'
+
+  SplunkHECToken:
+    Type: String
+    Description: 'Splunk HEC Token'
+    Default: '67892b54-ba53-4187-9ecb-8bf3dc54a2e9'
+    NoEcho: true
+
+  SplunkIndex:
+    Type: String
+    Description: 'Splunk Index for CloudTrail logs'
+    Default: 'splunk_demo'
+
+  SplunkSourceType:
+    Type: String
+    Description: 'Splunk Source Type for CloudTrail'
+    Default: 'aws:cloudtrail'
+
+  CloudTrailS3Bucket:
+    Type: String
+    Description: 'S3 Bucket containing CloudTrail logs'
+    Default: 'cloudtrail-3aec880f-1e11-3cca-82d7-6912c343399f'
+
+  CloudTrailS3Prefix:
+    Type: String
+    Description: 'S3 Prefix for CloudTrail logs (optional)'
+    Default: 'AWSLogs/'
+
+  LambdaSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: 'List of Subnet IDs for Lambda function'
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: 'Security Group ID for Lambda function'
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws-us-gov:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws-us-gov:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      - arn:aws-us-gov:iam::aws:policy/AmazonS3ReadOnlyAccess
+      Policies:
+      - PolicyName: S3AccessForCloudTrail
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws-us-gov:s3:::${CloudTrailS3Bucket}'
+            - !Sub 'arn:aws-us-gov:s3:::${CloudTrailS3Bucket}/*'
+
+  CloudTrailToSplunkFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import gzip
+          import boto3
+          import os
+          import requests
+          from datetime import datetime
+
+          s3_client = boto3.client('s3')
+
+          SPLUNK_HEC_URL = os.environ['SPLUNK_HEC_URL']
+          SPLUNK_HEC_TOKEN = os.environ['SPLUNK_HEC_TOKEN']
+          SPLUNK_INDEX = os.environ['SPLUNK_INDEX']
+          SPLUK_SOURCETYPE = os.environ['SPLUK_SOURCETYPE']
+
+          def lambda_handler(event, context):
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = record['s3']['object']['key']
+
+                  # Get the object
+                  response = s3_client.get_object(Bucket=bucket, Key=key)
+                  content = gzip.decompress(response['Body'].read())
+                  json_content = json.loads(content)
+
+                  # Process and send CloudTrail events to Splunk
+                  events = json_content.get('Records', [])
+                  for cloud_trail_event in events:
+                      splunk_event = {
+                          "time": int(datetime.strptime(cloud_trail_event['eventTime'], "%Y-%m-%dT%H:%M:%SZ").timestamp()),
+                          "source": "aws:cloudtrail",
+                          "sourcetype": SPLUK_SOURCETYPE,
+                          "index": SPLUNK_INDEX,
+                          "event": cloud_trail_event
+                      }
+                      send_to_splunk(splunk_event)
+
+          def send_to_splunk(event):
+              headers = {
+                  "Authorization": f"Splunk {SPLUNK_HEC_TOKEN}",
+                  "Content-Type": "application/json"
+              }
+              response = requests.post(SPLUNK_HEC_URL, headers=headers, json=event, verify=False)
+              if response.status_code != 200:
+                  print(f"Failed to send event to Splunk. Status code: {response.status_code}")
+                  print(f"Response content: {response.text}")
+
+      Runtime: python3.9
+      Timeout: 300
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds: !Ref LambdaSubnets
+        SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          SPLUNK_HEC_URL: !Ref SplunkHECUrl
+          SPLUNK_HEC_TOKEN: !Ref SplunkHECToken
+          SPLUNK_INDEX: !Ref SplunkIndex
+          SPLUNK_SOUFCDTYPE: !Ref SplunkSourceType
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CloudTrailToSplunkFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:aws-us-gov:s3:::${CloudTrailS3Bucket}'
+
+  S3BucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref CloudTrailS3Bucket
+      LambdaConfigurations:
+      - Event: 's3:ObjectCreated:*'
+        Function: !GetAtt CloudTrailToSplunkFunction.Arn
+        Filter:
+          S3Key:
+            Rules:
+            - Name: prefix
+              Value: !Ref CloudTrailS3Prefix
+
+Outputs:
+  LambdaFunctionName:
+    Description: 'Name of the created Lambda function'
+    Value: !Ref CloudTrailToSplunkFunction
+
+  LambdaFunctionArn:
+    Description: 'ARN of the created Lambda function'
+    Value: !GetAtt CloudTrailToSplunkFunction.Arn

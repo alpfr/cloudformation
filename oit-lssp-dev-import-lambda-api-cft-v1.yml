@@ -1,0 +1,133 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Lambda function and API Gateway integration'
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    AllowedValues: [ dev, test, staging, prod ]
+    Default: dev
+
+  FunctionPrefix:
+    Type: String
+    Description: Prefix for Lambda function S3 path
+    Default: mpc_pred_deploy
+    AllowedPattern: '^[a-zA-Z0-9-_/]+$'
+
+  LayerPrefix:
+    Type: String
+    Description: Prefix for Lambda layer S3 path
+    Default: mpc_pred_deploy
+    AllowedPattern: '^[a-zA-Z0-9-_/]+$'
+
+  LambdaFunctionS3Bucket:
+    Type: String
+    Description: S3 bucket containing Lambda function code
+    Default: 'a-usw2-dev-oit-lssp10-daba-sftp-000-lssp'
+
+  LambdaFunctionS3Key:
+    Type: String
+    Description: S3 key for Lambda function code zip file
+    Default: 'prod_L1_adhoc_invoker.zip'
+
+  LambdaLayerS3Bucket:
+    Type: String
+    Description: S3 bucket containing Lambda layer code
+    Default: 'a-usw2-dev-oit-lssp10-daba-sftp-000-lssp'
+
+  LambdaLayerS3Key:
+    Type: String
+    Description: S3 key for Lambda layer code zip file
+    Default: 'psqlv7-af37f933-bb38-423c-ad41-a28b6628f1ff.zip'
+
+  FunctionName:
+    Type: String
+    Description: Name of the Lambda function
+    Default: 'prod_L1_adhoc_invoker'
+
+  LayerName:
+    Type: String
+    Description: Name of the Lambda layer
+    Default: 'psqlv7'
+
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the Lambda execution role
+    Default: 'arn:aws-us-gov:iam::075085867188:role/stage-StageLambdaExecutionRole-govcloud'
+
+  ApiGatewayId:
+    Type: String
+    Description: ID of the existing API Gateway
+
+  ApiGatewayResourceId:
+    Type: String
+    Description: ID of the API Gateway resource to integrate with
+
+  HttpMethod:
+    Type: String
+    Description: HTTP method for the API integration
+    AllowedValues: [ GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS ]
+    Default: POST
+
+Resources:
+  LambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub '${LayerName}'
+      Description: !Sub 'Lambda layer for ${LayerName}'
+      Content:
+        S3Bucket: !Ref LambdaLayerS3Bucket
+        S3Key: !Sub '${LayerPrefix}/${LambdaLayerS3Key}'
+      CompatibleRuntimes:
+      - python3.8
+      CompatibleArchitectures:
+      - x86_64
+      - arm64
+    DeletionPolicy: Retain
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${FunctionName}'
+      Runtime: python3.8
+      Handler: index.handler
+      Role: !Ref ExecutionRoleArn
+      Code:
+        S3Bucket: !Ref LambdaFunctionS3Bucket
+        S3Key: !Sub '${FunctionPrefix}/${LambdaFunctionS3Key}'
+      Layers:
+      - !Ref LambdaLayer
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          ENV: !Ref Environment
+
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayId}/*/${HttpMethod}
+
+  ApiGatewayIntegration:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayId
+      ResourceId: !Ref ApiGatewayResourceId
+      HttpMethod: !Ref HttpMethod
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunction.Arn}/invocations
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+
+  ApiGatewayEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${ApiGatewayId}.execute-api.${AWS::Region}.amazonaws.com/${HttpMethod}

@@ -1,0 +1,349 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for S3 bucket update via API Gateway and Lambda with VPC support and environment configuration'
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    AllowedValues:
+    - dev
+    - test
+    - uat
+    - prod
+    Default: dev
+
+  ApplicationName:
+    Type: String
+    Description: Name of the application
+    Default: 'api-monitoring'
+
+  NotificationEmail:
+    Type: String
+    Description: Email address to receive error notifications
+    Default: 'tola.adesanya@afs.com'
+    AllowedPattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must be a valid email address
+
+  BucketName:
+    Type: String
+    Description: S3 Bucket Name
+    AllowedPattern: '[a-zA-Z0-9.-]*'
+    Default: 'a-usw2-dev-oit-lssp10-daba-sftp-000-lssp'
+    ConstraintDescription: 'Bucket name can include numbers, lowercase letters, uppercase letters, periods (.), and hyphens (-)'
+
+  Prefix:
+    Type: String
+    Description: S3 Bucket Prefix
+    Default: 'apimon'
+    AllowedPattern: '[\s\S]*'
+    MaxLength: 1024
+
+  Key:
+    Type: String
+    Description: S3 Object Key
+    Default: 'config.json'
+    MinLength: 1
+    MaxLength: 1024
+
+  Value:
+    Type: String
+    Default: '{"name": "John", "age": 30}'
+    Description: S3 Object Value
+    NoEcho: true
+
+  ApiStageName:
+    Type: String
+    Description: API Gateway Stage Name
+    Default: 'dev'
+    AllowedPattern: '[a-zA-Z0-9]*'
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where Lambda function will be deployed
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of Subnet IDs where Lambda function will be deployed
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: List of Security Group IDs for Lambda function
+
+  ExistingLambdaRoleArn:
+    Type: String
+    Description: ARN of existing IAM role for Lambda function (optional)
+    Default: 'arn:aws-us-gov:iam::075085867188:role/ddd-LambdaExecutionRole-F5F8qFY5TIWC'
+
+Mappings:
+  EnvironmentMap:
+    dev:
+      memory: 128
+      timeout: 30
+    test:
+      memory: 128
+      timeout: 30
+    uat:
+      memory: 256
+      timeout: 60
+    prod:
+      memory: 512
+      timeout: 90
+
+Resources:
+  UpdateS3BucketLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ApplicationName}-${Environment}-update-s3-bucket-lambda'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !Ref ExistingLambdaRoleArn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import logging
+          from datetime import datetime
+
+          # Configure logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO if os.environ['ENVIRONMENT'] == 'prod' else logging.DEBUG)
+
+          # Initialize AWS clients
+          s3 = boto3.client('s3')
+          sns = boto3.client('sns')
+
+          def send_error_notification(error_details):
+              try:
+                  environment = os.environ['ENVIRONMENT']
+                  function_name = os.environ['AWS_LAMBDA_FUNCTION_NAME']
+                  sns_topic_arn = os.environ['SNS_TOPIC_ARN']
+
+                  message = {
+                      'timestamp': datetime.utcnow().isoformat(),
+                      'environment': environment,
+                      'function_name': function_name,
+                      'error_details': error_details
+                  }
+
+                  sns.publish(
+                      TopicArn=sns_topic_arn,
+                      Subject=f'Error in {environment} - S3 Bucket Update Lambda',
+                      Message=json.dumps(message, indent=2)
+                  )
+                  logger.info(f"Error notification sent to SNS topic: {sns_topic_arn}")
+              except Exception as e:
+                  logger.error(f"Failed to send SNS notification: {str(e)}")
+
+          def validate_input(bucket, prefix, key, value):
+              if not bucket or not key or not isinstance(value, str):
+                  raise ValueError("Invalid input parameters")
+              if prefix and not prefix.strip('/'):
+                  raise ValueError("Invalid prefix format")
+
+          def lambda_handler(event, context):
+              try:
+                  # Get environment variables
+                  bucket_name = os.environ['BUCKET_NAME']
+                  prefix = os.environ['PREFIX']
+                  key = os.environ['KEY']
+                  value = os.environ['VALUE']
+                  environment = os.environ['ENVIRONMENT']
+
+                  logger.info(f"Running in environment: {environment}")
+                  logger.info(f"Lambda running in VPC: {os.environ.get('AWS_LAMBDA_VPC_ID', 'Not in VPC')}")
+
+                  # Validate inputs
+                  validate_input(bucket_name, prefix, key, value)
+
+                  # Construct full key path
+                  full_key = f"{prefix.strip('/')}/{key}" if prefix else key
+
+                  logger.info(f"Attempting to update object in bucket: {bucket_name}, key: {full_key}")
+
+                  # Put object with server-side encryption
+                  s3.put_object(
+                      Bucket=bucket_name,
+                      Key=full_key,
+                      Body=value,
+                      ServerSideEncryption='AES256'
+                  )
+
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({
+                          'message': f'Object successfully updated in {bucket_name}',
+                          'bucket': bucket_name,
+                          'key': full_key,
+                          'environment': environment
+                      })
+                  }
+
+              except ValueError as ve:
+                  error_response = {
+                      'statusCode': 400,
+                      'headers': {
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({
+                          'error': 'Validation error',
+                          'message': str(ve)
+                      })
+                  }
+                  send_error_notification({
+                      'error_type': 'Validation Error',
+                      'message': str(ve),
+                      'status_code': 400
+                  })
+                  return error_response
+
+              except Exception as e:
+                  error_response = {
+                      'statusCode': 500,
+                      'headers': {
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({
+                          'error': 'Internal server error',
+                          'message': str(e)
+                      })
+                  }
+                  send_error_notification({
+                      'error_type': 'Internal Server Error',
+                      'message': str(e),
+                      'status_code': 500
+                  })
+                  return error_response
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref BucketName
+          PREFIX: !Ref Prefix
+          KEY: !Ref Key
+          VALUE: !Ref Value
+          ENVIRONMENT: !Ref Environment
+          SNS_TOPIC_ARN: !Ref ErrorNotificationTopic
+      Timeout: !FindInMap [EnvironmentMap, !Ref Environment, timeout]
+      MemorySize: !FindInMap [EnvironmentMap, !Ref Environment, memory]
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds: !Ref SubnetIds
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+
+  # API Gateway
+  UpdateS3BucketApi:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub '${ApplicationName}-${Environment}-update-s3-bucket-api'
+      EndpointConfiguration:
+        Types:
+        - REGIONAL
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+
+  UpdateS3BucketResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref UpdateS3BucketApi
+      ParentId: !GetAtt 'UpdateS3BucketApi.RootResourceId'
+      PathPart: 'update-s3-bucket'
+
+  UpdateS3BucketMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref UpdateS3BucketApi
+      ResourceId: !Ref UpdateS3BucketResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws-us-gov:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UpdateS3BucketLambda.Arn}/invocations'
+
+  UpdateS3BucketDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn: UpdateS3BucketMethod
+    Properties:
+      RestApiId: !Ref UpdateS3BucketApi
+
+  UpdateS3BucketStage:
+    Type: 'AWS::ApiGateway::Stage'
+    Properties:
+      DeploymentId: !Ref UpdateS3BucketDeployment
+      RestApiId: !Ref UpdateS3BucketApi
+      StageName: !Ref Environment # Changed from ApiStageName to Environment
+      MethodSettings:
+      - ResourcePath: '/*'
+        HttpMethod: '*'
+        MetricsEnabled: true
+        DataTraceEnabled: true
+        LoggingLevel: ERROR
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+
+  # SNS Topic for Error Notifications
+  ErrorNotificationTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub '${ApplicationName}-${Environment}-error-notifications'
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+
+  # SNS Topic Subscription
+  ErrorNotificationSubscription:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      TopicArn: !Ref ErrorNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+Outputs:
+  ApiUrl:
+    Value: !Sub 'https://${UpdateS3BucketApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/update-s3-bucket'
+    Description: API Gateway URL for the current environment
+
+  LambdaFunctionName:
+    Value: !Ref UpdateS3BucketLambda
+    Description: Lambda function name
+
+  LambdaFunctionArn:
+    Value: !GetAtt UpdateS3BucketLambda.Arn
+    Description: Lambda function ARN
+
+  Environment:
+    Value: !Ref Environment
+    Description: Deployment Environment
+
+  VpcConfig:
+    Description: VPC Configuration for Lambda
+    Value: !Join
+    - ''
+    - - 'VPC: '
+      - !Ref VpcId
+      - ', Subnets: '
+      - !Join
+        - ','
+        - !Ref SubnetIds
+      - ', Security Groups: '
+      - !Join
+        - ','
+        - !Ref SecurityGroupIds
+
+  ErrorNotificationTopicArn:
+    Value: !Ref ErrorNotificationTopic
+    Description: SNS Topic ARN for error notifications

@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: API Gateway with Lambda Integration, CloudWatch Logging, X-Ray tracing, and Resource Policy
+
+Parameters:
+  LambdaArn:
+    Type: String
+    Description: ARN of the Lambda function
+
+  StageName:
+    Type: String
+    Description: Stage name for API Gateway deployment
+    Default: prod
+    AllowedPattern: "[a-zA-Z0-9]+"
+    ConstraintDescription: Stage name can only contain alphanumeric characters
+
+  IpAddressCidr:
+    Type: CommaDelimitedList
+    Description: IP address CIDR(s) for API Gateway resource policy
+    Default: 192.168.0.0/16
+
+  ExistingApiRoleArn:
+    Type: String
+    Description: ARN of existing IAM role for API Gateway
+
+Resources:
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-api-${AWS::Region}"
+      Description: My API with Lambda integration
+      EndpointConfiguration:
+        Types:
+        - REGIONAL
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: myresource
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - ApiGatewayMethod
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      Description: Initial deployment
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiGatewayDeployment
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref StageName
+      TracingEnabled: true
+      MethodSettings:
+      - ResourcePath: /*
+        HttpMethod: "*"
+        MetricsEnabled: true
+        DataTraceEnabled: true
+        LoggingLevel: INFO
+
+  ApiGatewayResourcePolicy:
+    Type: AWS::ApiGateway::RestApi
+    DependsOn: ApiGatewayRestApi
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      Policy: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "execute-api:Invoke",
+              "Resource": "${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/*",
+              "Condition": {
+                "IpAddress": {
+                  "aws:SourceIp": "${IpAddressCidr}"
+                }
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/myresource"
+
+  ApiId:
+    Description: API Gateway REST API ID
+    Value: !Ref ApiGatewayRestApi
+
+  ApiStageName:
+    Description: API Gateway Stage name
+    Value: !Ref StageName

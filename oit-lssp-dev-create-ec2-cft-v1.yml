@@ -1,0 +1,245 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: EC2 Instance with PostgreSQL Client, SSM Agent, Configurable Encrypted EBS Storage, Enhanced Tags, and Monitoring for AWS GovCloud (US-West)
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type
+    AllowedValues:
+    - t3.micro
+    - t3.small
+    - t3.medium
+    - m6i.large
+    - m6i.xlarge
+    - m6i.2xlarge
+    - m6i.4xlarge
+    - m6i.8xlarge
+    - m6i.16xlarge
+    ConstraintDescription: Must be a valid EC2 instance type.
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select an existing VPC where the instance will be deployed.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID where the instance will be created.
+
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID to associate with the instance.
+
+  RootEbsVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 16384
+    Description: Size of the root EBS volume in GiB (20-16384 GiB).
+
+  AdditionalEbsVolumeSize:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 16384
+    Description: Size of the additional EBS volume in GiB (1-16384 GiB).
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - stg
+    - prd
+    Description: Environment tag for the instance.
+
+  ProjectName:
+    Type: String
+    Default: lssp10
+    MinLength: 1
+    MaxLength: 128
+    Description: The name of the project this instance belongs to.
+
+  ApplicationName:
+    Type: String
+    Default: bastion
+    MinLength: 1
+    MaxLength: 128
+    Description: The name of the application running on this instance.
+
+  InstanceOS:
+    Type: String
+    Default: aws-linux
+    MinLength: 1
+    MaxLength: 128
+    Description: The name of the Instance OS running on this instance.
+
+  ProgramOffice:
+    Type: String
+    Default: oit
+    MinLength: 1
+    MaxLength: 128
+    Description: The name of the program office running on this instance.
+
+  ProjectOwner:
+    Type: String
+    Default: ExampleOwner
+    MinLength: 1
+    MaxLength: 128
+    Description: The owner of the project.
+
+  ResourceNumber:
+    Description: Resource number of S3 bucket.
+    Type: String
+    AllowedPattern: '\d\d\d'
+    ConstraintDescription: 'S3 bucket resource number from 000 to 999'
+
+  CostCenter:
+    Type: String
+    Default: ExampleCostCenter
+    Description: Cost Center for the project.
+
+  ImageID:
+    Type: String
+    Default: 'ami-01e3733935f413b23'
+    Description: Cost Center for the project.
+
+  EnableDetailedMonitoring:
+    Type: String
+    Default: false
+    AllowedValues:
+    - true
+    - false
+    Description: Enable detailed CloudWatch monitoring for the instance.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: "Network Configuration"
+      Parameters:
+      - VpcId
+      - SubnetId
+      - SecurityGroupId
+    - Label:
+        default: "Instance Configuration"
+      Parameters:
+      - InstanceType
+      - KeyName
+      - IamInstanceProfile
+      - EnableDetailedMonitoring
+    - Label:
+        default: "Storage Configuration"
+      Parameters:
+      - RootEbsVolumeSize
+      - AdditionalEbsVolumeSize
+    - Label:
+        default: "Project Information"
+      Parameters:
+      - Environment
+      - ProjectName
+      - ApplicationName
+      - ProjectOwner
+    ParameterLabels:
+      VpcId:
+        default: "Which VPC should this be deployed to?"
+      SubnetId:
+        default: "Which subnet should this be deployed to?"
+      InstanceType:
+        default: "What instance type should be used?"
+
+Rules:
+  SubnetVpcRule:
+    RuleCondition: !Not [ !Equals [ !Ref VpcId, "" ] ]
+    Assertions:
+    - Assert: !EachMemberIn
+        - !ValueOfAll
+          - AWS::EC2::Subnet::Id
+          - VpcId
+        - !RefAll 'AWS::EC2::VPC::Id'
+      AssertDescription: All subnets must be in the selected VPC
+
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      ImageId: !Ref ImageID
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: true
+        DeviceIndex: "0"
+        SubnetId: !Ref SubnetId
+        GroupSet:
+        - !Ref SecurityGroupId
+        DeleteOnTermination: true
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: !Ref RootEbsVolumeSize
+          VolumeType: gp3
+          Encrypted: true
+          DeleteOnTermination: true
+      - DeviceName: /dev/xvdf
+        Ebs:
+          VolumeSize: !Ref AdditionalEbsVolumeSize
+          VolumeType: gp3
+          Encrypted: true
+          DeleteOnTermination: true
+
+      Monitoring: !Ref EnableDetailedMonitoring
+      Tags:
+      - Key: Name
+        Value: !Sub ${ProgramOffice}-${ProjectName}-${Environment}-${InstanceOS}-${ApplicationName}-${ResourceNumber}
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: ProjectName
+        Value: !Ref ProjectName
+      - Key: ApplicationName
+        Value: !Ref ApplicationName
+      - Key: ProjectOwner
+        Value: !Ref ProjectOwner
+      - Key: CostCenter
+        Value: !Ref CostCenter
+      - Key: CreatedBy
+        Value: CloudFormation
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          RETRY_COUNT=5
+          RETRY_DELAY=10
+
+          function retry {
+              for ((i=1; i<=$RETRY_COUNT; i++)); do
+                  $@ && break || {
+                      echo "Attempt $i failed. Retrying in $RETRY_DELAY seconds..."
+                      sleep $RETRY_DELAY
+                  }
+              done
+          }
+
+          retry dnf update -y
+          retry dnf install -y postgresql15 amazon-cloudwatch-agent
+          retry dnf install -y https://s3.us-gov-west-1.amazonaws.com/amazon-ssm-us-gov-west-1/latest/linux_amd64/amazon-ssm-agent.rpm
+          systemctl enable amazon-ssm-agent
+          systemctl start amazon-ssm-agent
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c ssm:/AmazonCloudWatch/DefaultConfig
+
+          retry mkfs -t xfs /dev/xvdf
+          mkdir -p /data
+          echo "/dev/xvdf /data xfs defaults,nofail 0 2" >> /etc/fstab
+          mount -a
+          chown root:root /data
+          chmod 755 /data
+
+          echo "Installation completed at $(date)" > /var/log/user-data-completion.log
+
+Outputs:
+  InstanceId:
+    Description: Instance ID of the created EC2 instance
+    Value: !Ref EC2Instance

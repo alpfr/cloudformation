@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "IAM Role for AWS Glue execution in AWS GovCloud (US-West)"
+
+Parameters:
+  Environment:
+    Type: String
+    Description: "Environment name (e.g., dev, stage, prod)"
+    Default: "dev"
+    AllowedValues: [ "dev", "stage", "prod" ]
+
+  RoleName:
+    Type: String
+    Description: "Name of the Glue execution role"
+    Default: "GlueExecutionRole"
+
+  S3BucketName:
+    Type: String
+    Description: "Name of the S3 bucket to grant access to"
+
+  AWSRegion:
+    Type: String
+    Description: "AWS GovCloud Region"
+    Default: "us-gov-west-1"
+    AllowedValues: [ "us-gov-west-1" ]
+
+Conditions:
+  IsGovCloud: !Equals [ !Ref "AWS::Partition", "aws-us-gov" ]
+
+Resources:
+  GlueExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "${Environment}-${RoleName}-govcloud"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - "glue.amazonaws.com"
+          Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+      - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSGlueServiceRole"
+      Policies:
+      - PolicyName: "CloudWatchEnhancedPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "cloudwatch:PutMetricData"
+            - "cloudwatch:GetMetricData"
+            - "cloudwatch:ListMetrics"
+            - "cloudwatch:GetMetricStatistics"
+            - "cloudwatch:DescribeAlarms"
+            Resource: "*"
+          - Effect: "Allow"
+            Action:
+            - "logs:CreateLogGroup"
+            - "logs:CreateLogStream"
+            - "logs:PutLogEvents"
+            - "logs:DescribeLogGroups"
+            - "logs:DescribeLogStreams"
+            Resource:
+            - !Sub "arn:${AWS::Partition}:logs:${AWSRegion}:${AWS::AccountId}:log-group:/aws/glue/*"
+
+      - PolicyName: "S3AccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "s3:GetObject"
+            - "s3:PutObject"
+            - "s3:DeleteObject"
+            - "s3:GetObjectVersion"
+            - "s3:GetObjectACL"
+            - "s3:PutObjectACL"
+            - "s3:ListBucket"
+            - "s3:GetBucketLocation"
+            Resource:
+            - !Sub "arn:${AWS::Partition}:s3:::${S3BucketName}"
+            - !Sub "arn:${AWS::Partition}:s3:::${S3BucketName}/*"
+            - !Sub "arn:${AWS::Partition}:s3:::aws-glue-*"
+            - !Sub "arn:${AWS::Partition}:s3:::aws-glue-*/*"
+
+      - PolicyName: "DatabaseAccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "glue:GetDatabase"
+            - "glue:GetDatabases"
+            - "glue:CreateDatabase"
+            - "glue:UpdateDatabase"
+            - "glue:DeleteDatabase"
+            - "glue:GetTable"
+            - "glue:GetTables"
+            - "glue:CreateTable"
+            - "glue:UpdateTable"
+            - "glue:DeleteTable"
+            - "glue:GetPartitions"
+            - "glue:GetPartition"
+            - "glue:BatchCreatePartition"
+            - "glue:BatchDeletePartition"
+            - "glue:BatchGetPartition"
+            Resource:
+            - !Sub "arn:${AWS::Partition}:glue:${AWSRegion}:${AWS::AccountId}:catalog"
+            - !Sub "arn:${AWS::Partition}:glue:${AWSRegion}:${AWS::AccountId}:database/*"
+            - !Sub "arn:${AWS::Partition}:glue:${AWSRegion}:${AWS::AccountId}:table/*"
+
+      - PolicyName: "RDSAccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "rds:DescribeDBInstances"
+            - "rds:StartDBInstance"
+            - "rds:StopDBInstance"
+            - "rds:DescribeDBLogFiles"
+            - "rds-db:connect"
+            Resource: !Sub "arn:${AWS::Partition}:rds:${AWSRegion}:${AWS::AccountId}:db:*"
+          - Effect: "Allow"
+            Action:
+            - "rds:ListTagsForResource"
+            - "rds:DescribeDBSnapshots"
+            Resource: "*"
+
+      - PolicyName: "KMSAccess"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "kms:Decrypt"
+            - "kms:GenerateDataKey"
+            - "kms:Encrypt"
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWSRegion}:${AWS::AccountId}:key/*"
+
+      Tags:
+      - Key: "Environment"
+        Value: !Ref Environment
+      - Key: "Name"
+        Value: !Sub "${Environment}-${RoleName}-govcloud"
+      - Key: "ManagedBy"
+        Value: "CloudFormation"
+      - Key: "LastUpdated"
+        Value: !Ref "AWS::StackName"
+      - Key: "Region"
+        Value: !Ref AWSRegion
+      - Key: "Classification"
+        Value: "GovCloud"
+      - Key: "Service"
+        Value: "AWS Glue"
+
+Outputs:
+  GlueExecutionRoleArn:
+    Description: "The ARN of the Glue execution role"
+    Value: !GetAtt GlueExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-GovCloud-GlueRoleArn"
+
+  GlueExecutionRoleName:
+    Description: "The name of the Glue execution role"
+    Value: !Ref GlueExecutionRole
+    Export:
+      Name: !Sub "${AWS::StackName}-GovCloud-GlueRoleName"

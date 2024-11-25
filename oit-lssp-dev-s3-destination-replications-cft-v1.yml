@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for configuring S3 destination replication in AWS GovCloud
+
+Parameters:
+  DestinationBucketName:
+    Type: String
+    Description: Name of the existing destination S3 bucket
+  SourceAccountId:
+    Type: String
+    Description: AWS Account ID where the source bucket exists
+  ReplicationRoleArn:
+    Type: String
+    Description: ARN of the replication role from the source account
+
+Resources:
+  DestinationBucketVersioning:
+    Type: AWS::S3::BucketVersioning
+    Properties:
+      Bucket: !Ref DestinationBucketName
+      VersioningConfiguration:
+        Status: Enabled
+
+  DestinationBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DestinationBucketName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowReplication
+          Effect: Allow
+          Principal:
+            AWS: !Ref ReplicationRoleArn
+          Action:
+          - s3:ReplicateObject
+          - s3:ReplicateDelete
+          - s3:ReplicateTags
+          - s3:GetObjectVersion
+          - s3:GetObjectVersionAcl
+          - s3:GetObjectVersionTagging
+          - s3:ObjectOwnerOverrideToBucketOwner
+          - s3:PutObject
+          - s3:PutObjectAcl
+          - s3:PutObjectTagging
+          - s3:ReplicateObject
+          - s3:ReplicateDelete
+          - s3:ReplicateTags
+          - s3:PutObject
+          - s3:PutObjectVersionAcl
+          - s3:PutObjectTagging
+          - s3:GetObjectVersion
+          - s3:GetObjectVersionAcl
+          - s3:GetObjectVersionTagging
+          - s3:ObjectOwnerOverrideToBucketOwner
+          Resource:
+          - !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}'
+          - !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}/*'
+        - Sid: AllowSourceAccountAccess
+          Effect: Allow
+          Principal:
+            AWS: !Sub 'arn:aws-us-gov:iam::${SourceAccountId}:root'
+          Action:
+          - s3:ListBucket
+          - s3:GetBucketLocation
+          - s3:ListBucketVersions
+          Resource: !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}'
+        - Sid: AllowSourceAccountObjectAccess
+          Effect: Allow
+          Principal:
+            AWS: !Sub 'arn:aws-us-gov:iam::${SourceAccountId}:root'
+          Action:
+          - s3:GetObject
+          - s3:GetObjectVersion
+          Resource: !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}/*'
+
+Outputs:
+  DestinationBucketName:
+    Value: !Ref DestinationBucketName
+    Description: Name of the destination bucket

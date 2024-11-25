@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to create VPC endpoints for AWS services with comprehensive tagging strategy
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: The ID of the VPC where the endpoints will be created
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: The subnet IDs in which to create the endpoints
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: The security group IDs to associate with the endpoints
+
+  EnableDNSHostnames:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Description: Enable DNS hostnames for interface endpoints
+
+  Environment:
+    Type: String
+    AllowedValues:
+    - 'dev'
+    - 'test'
+    - 'stage'
+    - 'prod'
+    Description: Environment name for the resources
+
+  ProjectName:
+    Type: String
+    MinLength: 1
+    Description: Name of the project
+
+  ApplicationName:
+    Type: String
+    MinLength: 1
+    Description: Name of the application
+
+  ProjectOwner:
+    Type: String
+    MinLength: 1
+    Description: Email or name of the project owner
+
+  CostCenter:
+    Type: String
+    MinLength: 1
+    Description: Cost center for billing purposes
+
+  Backup:
+    Type: String
+    AllowedValues:
+    - 'yes'
+    - 'no'
+    Default: 'yes'
+    Description: Whether the resource needs to be backed up
+
+Resources:
+  # S3 Gateway Endpoint
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Principal: "*"
+          Action:
+          - "s3:GetObject"
+          - "s3:PutObject"
+          - "s3:ListBucket"
+          Resource: "*"
+
+  # EC2 Interface Endpoint
+  EC2Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+
+  # RDS Interface Endpoint
+  RDSEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.rds"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+
+  # SSM Endpoints
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+
+  # API Gateway Interface Endpoint
+  APIGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.execute-api"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+
+  # ECR Endpoints
+  ECRApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+
+  ECRDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPCId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: !Ref SecurityGroupIds
+      PrivateDnsEnabled: !Ref EnableDNSHostnames
+
+Outputs:
+  S3EndpointId:
+    Description: ID of the S3 VPC Endpoint
+    Value: !Ref S3Endpoint
+
+  SSMEndpointId:
+    Description: ID of the SSM VPC Endpoint
+    Value: !Ref SSMEndpoint
+
+  ECRApiEndpointId:
+    Description: ID of the ECR API VPC Endpoint
+    Value: !Ref ECRApiEndpoint
+
+  ECRDkrEndpointId:
+    Description: ID of the ECR Docker VPC Endpoint
+    Value: !Ref ECRDkrEndpoint
+
+  APIGatewayEndpointId:
+    Description: ID of the API Gateway VPC Endpoint
+    Value: !Ref APIGatewayEndpoint

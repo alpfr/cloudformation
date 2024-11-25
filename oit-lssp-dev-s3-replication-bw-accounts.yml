@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudFormation template to configure replication between existing S3 buckets with detailed rule scope and additional replication options."
+
+Parameters:
+  SourceBucketName:
+    Type: String
+    Description: "Name of the existing source bucket."
+  DestinationBucketName:
+    Type: String
+    Description: "Name of the existing destination bucket."
+  DestinationAccountId:
+    Type: String
+    Description: "AWS Account ID of the destination account."
+  SourcePrefix:
+    Type: String
+    Description: "Prefix for objects to replicate from the source bucket."
+  DestinationPrefix:
+    Type: String
+    Description: "Prefix for replicated objects in the destination bucket."
+  SourceKmsKeyArn:
+    Type: String
+    Description: "ARN of the KMS key to use for the source bucket."
+  DestinationKmsKeyArn:
+    Type: String
+    Description: "ARN of the KMS key to use for the destination bucket."
+  ReplicationRuleName:
+    Type: String
+    Description: "Name of the replication rule."
+
+Resources:
+  # IAM Role for Replication
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "s3.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "ReplicationPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObjectVersion"
+                  - "s3:GetObjectVersionAcl"
+                  - "s3:GetObjectVersionForReplication"
+                  - "s3:GetObjectVersionTagging"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketVersions"
+                Resource:
+                  - !Sub "arn:aws:s3:::${SourceBucketName}"
+                  - !Sub "arn:aws:s3:::${SourceBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - "s3:ReplicateObject"
+                  - "s3:ReplicateDelete"
+                  - "s3:ReplicateTags"
+                Resource: !Sub "arn:aws:s3:::${DestinationBucketName}/*"
+
+  # Bucket Policy for Destination Bucket
+  DestinationBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DestinationBucketName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ReplicationRole}"
+            Action:
+              - "s3:ReplicateObject"
+              - "s3:ReplicateDelete"
+              - "s3:ReplicateTags"
+            Resource: !Sub "arn:aws:s3:::${DestinationBucketName}/*"
+
+  # Replication Configuration
+  ReplicationConfiguration:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SourceBucketName
+      ReplicationConfiguration:
+        Role: !GetAtt ReplicationRole.Arn
+        Rules:
+          - Id: !Ref ReplicationRuleName
+            Status: Enabled
+            Filter:
+              And:
+                Prefix: !Ref SourcePrefix
+                Tags:
+                  - Key: Replication
+                    Value: Enabled
+            Priority: 1
+            SourceSelectionCriteria:
+              SseKmsEncryptedObjects:
+                Status: Enabled
+            Destination:
+              Bucket: !Sub "arn:aws:s3:::${DestinationBucketName}"
+              Account: !Ref DestinationAccountId
+              StorageClass: STANDARD
+              EncryptionConfiguration:
+                ReplicaKmsKeyID: !Ref DestinationKmsKeyArn
+              AccessControlTranslation:
+                Owner: Destination
+              Prefix: !Ref DestinationPrefix
+            DeleteMarkerReplication:
+              Status: Enabled
+            ReplicationTime:
+              Status: Enabled
+              Time: 
+                Minutes: 15 # Replication completion time goal in minutes
+            Metrics:
+              Status: Enabled
+              EventThreshold:
+                Minutes: 15 # Event threshold time for replication delays
+            ExistingObjectReplication:
+              Status: Enabled # Replicate existing objects
+            DeleteMarkerReplication:
+              Status: Enabled # Replicate delete markers for versioned objects
+
+Outputs:
+  SourceBucket:
+    Description: "Source Bucket Name"
+    Value: !Ref SourceBucketName
+
+  DestinationBucket:
+    Description: "Destination Bucket Name"
+    Value: !Ref DestinationBucketName
+
+  ReplicationRole:
+    Description: "IAM Role for Replication"
+    Value: !GetAtt ReplicationRole.Arn

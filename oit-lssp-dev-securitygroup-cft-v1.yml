@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudFormation template to create a security group with
+  customizable inbound and outbound rules, with flexible tagging options."
+
+Parameters:
+  VpcId:
+    Type: "AWS::EC2::VPC::Id"
+    Description: "Select the VPC where the security group will be created"
+
+  SecurityGroupName:
+    Type: String
+    Default: "Custom-Security-Group"
+    Description: "Name of the security group"
+
+  Environment:
+    Type: String
+    Default: "dev"
+    AllowedValues:
+    - "dev"
+    - "test"
+    - "prod"
+    Description: "Environment for the security group (e.g., dev, test, prod)"
+
+  SecurityGroupDescription:
+    Type: String
+    Default: "Custom security group with configurable inbound and outbound rules"
+    Description: "Description of the security group"
+
+  RegionTag:
+    Type: String
+    Default: "us-gov-west-1"
+    AllowedValues:
+    - "us-gov-west-1"
+    - "us-gov-east-1"
+    Description: "Region tag for the security group, applicable to AWS GovCloud"
+
+  InboundIpProtocol:
+    Type: String
+    Default: "tcp"
+    Description: "IP protocol for the inbound rule (e.g., tcp, udp, icmp)"
+
+  InboundFromPort:
+    Type: Number
+    Default: 443
+    Description: "Starting port for the inbound rule"
+
+  InboundToPort:
+    Type: Number
+    Default: 443
+    Description: "Ending port for the inbound rule"
+
+  InboundCidrIp:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: "CIDR IP range for the inbound rule"
+
+  EgressIpProtocol:
+    Type: String
+    Default: "-1"
+    Description: "IP protocol for the egress rule (e.g., tcp, udp, icmp, or -1 for all)"
+
+  EgressFromPort:
+    Type: Number
+    Default: 0
+    Description: "Starting port for the egress rule (use 0 if IP protocol is set to
+      -1 for all protocols)"
+
+  EgressToPort:
+    Type: Number
+    Default: 0
+    Description: "Ending port for the egress rule (use 0 if IP protocol is set to -1
+      for all protocols)"
+
+  EgressCidrIp:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: "CIDR IP range for the egress rule"
+
+Resources:
+  CustomSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName: !Ref SecurityGroupName
+      GroupDescription: !Ref SecurityGroupDescription
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: !Ref InboundIpProtocol
+        FromPort: !Ref InboundFromPort
+        ToPort: !Ref InboundToPort
+        CidrIp: !Ref InboundCidrIp
+      SecurityGroupEgress:
+      - IpProtocol: !Ref EgressIpProtocol
+        FromPort: !Ref EgressFromPort
+        ToPort: !Ref EgressToPort
+        CidrIp: !Ref EgressCidrIp
+      Tags:
+      - Key: "Name"
+        Value: !Ref SecurityGroupName
+      - Key: "Environment"
+        Value: !Ref Environment
+      - Key: "Description"
+        Value: !Ref SecurityGroupDescription
+      - Key: "Region"
+        Value: !Ref RegionTag
+      - Key: "InboundIpProtocol"
+        Value: !Ref InboundIpProtocol
+      - Key: "InboundFromPort"
+        Value: !Sub "${InboundFromPort}"
+      - Key: "InboundToPort"
+        Value: !Sub "${InboundToPort}"
+      - Key: "InboundCidrIp"
+        Value: !Ref InboundCidrIp
+      - Key: "EgressIpProtocol"
+        Value: !Ref EgressIpProtocol
+      - Key: "EgressFromPort"
+        Value: !Sub "${EgressFromPort}"
+      - Key: "EgressToPort"
+        Value: !Sub "${EgressToPort}"
+      - Key: "EgressCidrIp"
+        Value: !Ref EgressCidrIp
+
+Outputs:
+  SecurityGroupId:
+    Description: "Security Group ID with configurable inbound and outbound rules."
+    Value: !Ref CustomSecurityGroup

@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: some-sftp-server
+
+Parameters:
+  HostedZoneIdParam:
+    Type: String
+    Description: Hosted Zone ID
+  SFTPHostnameParam:
+    Type: String
+    Description: Hostname for the SFTP Servero
+
+  SFTPIAMRoleParam:
+    Type: String
+    Description: IAM Role Arn for the SFTP
+    Default: ''
+
+  SFTPBucketParam:
+    Type: String
+    Description: Bucket for the SFTP Server
+
+  DMZSubnetA:
+    Description: The ID of the first public subnet where the transfer servers will be deployed in the Production VPC.
+    Type: AWS::EC2::Subnet::Id
+  DMZSubnetB:
+    Description: The ID of the first public subnet where the transfer servers will be deployed in the Production VPC.
+    Type: AWS::EC2::Subnet::Id
+  VPCProduction:
+    Description: ID of the Production VPC where the SFTPServer will be deployed.
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+  EIPTran01:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  EIPTran02:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  SFTPServer:
+    Type: AWS::Transfer::Server
+    Properties:
+      IdentityProviderType:
+      - SERVICE_MANAGED
+      EndpointDetails:
+        AddressAllocationIds:
+        - !GetAtt EIPTran01.AllocationId
+        - !GetAtt EIPTran02.AllocationId
+        SubnetIds:
+        - !Ref DMZSubnetA
+        - !Ref DMZSubnetB
+      Protocols:
+      - SFTP
+      Tags:
+      - Key: Application
+        Value: some-sftp-servver
+
+  CloudWatchLoggingRole:
+    Description: IAM role used by Transfer to log API requests to CloudWatch
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - transfer.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: TransferLogsPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:DescribeLogStreams
+            - logs:PutLogEvents
+            Resource:
+              Fn::Sub: '*'
+
+
+  SFTPServerDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Name: !Ref SFTPHostnameParam
+      HostedZoneId: !Ref HostedZoneIdParam
+      Type: CNAME
+      Comment: SFTP Transfer custom hostname
+      TTL: 300
+      ResourceRecords:
+      - !Sub ${SFTPServer.ServerId}.server.transfer.${AWS::Region}.amazonaws.com
+
+  SFTPServerS3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: some-sftp-bucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+      - Key: Application
+        Value: some-sftp-servver
+
+  SFTPUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - transfer.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: S3FullAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:ListAllMyBuckets
+            - s3:GetBucketLocation
+            Resource: "*"
+      - PolicyName: AllowListingOfUserFolder
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:ListBucket
+            Resource: !GetAtt SFTPServerS3Bucket.Arn
+      - PolicyName: HomeDirObjectAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:GetObjectVersion
+            - s3:DeleteObject
+            - s3:DeleteObjectVersion
+            Resource: !Sub "${SFTPServerS3Bucket.Arn}/*"
+
+  TestUser:
+    Type: AWS::Transfer::User
+    Properties:
+      ServerId: !GetAtt SFTPServer.ServerId
+      UserName: john
+      HomeDirectory: !Sub "/${SFTPServerS3Bucket}/home/john"
+      Policy: >
+        {
+          "Version": "2012-10-17",
+                  "Statement": [
+                      {
+                          "Sid": "AllowListingOfUserFolder",
+                          "Effect": "Allow",
+                          "Action": "s3:ListBucket",
+                          "Resource": "arn:aws:s3:::${transfer:HomeBucket}",
+                          "Condition": {
+                              "StringLike": {
+                                  "s3:prefix": [
+                                      "home/${transfer:UserName}/*",
+                                      "home/${transfer:UserName}"
+                                  ]
+                              }
+                          }
+                      },
+                      {
+                          "Sid": "HomeDirObjectAccess",
+                          "Effect": "Allow",
+                          "Action": [
+                              "s3:PutObject",
+                              "s3:GetObject",
+                              "s3:GetObjectVersion",
+                              "s3:DeleteObject",
+                              "s3:DeleteObjectVersion"
+                          ],
+                          "Resource": "arn:aws:s3:::${transfer:HomeDirectory}*"
+                      }
+                  ]
+          }
+      Role: !GetAtt SFTPUserRole.Arn
+      SshPublicKeys:
+      - ssh-rsa AAAAB3NzaC1********************************cMNTZKrQTDjrpvCJ83w== john.doe@gmail.com
+      Tags:
+      - Key: Application
+        Value: some-sftp-server

@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "IAM Role for SFTP transfers in AWS GovCloud (US-West)"
+
+Parameters:
+  Environment:
+    Type: String
+    Description: "Environment name (e.g., dev, stg, prod)"
+    Default: "dev"
+    AllowedValues: [ "dev", "stg", "prod" ]
+
+  RoleName:
+    Type: String
+    Description: "Name of the SFTP User execution role"
+    Default: "SFTPUserExecutionRole"
+
+  S3BucketName:
+    Type: String
+    Description: "Name of the S3 bucket to grant access to"
+
+  ProjectName:
+    Type: String
+    Default: 'LSSP10'
+    Description: "Name of the Project"
+
+  KMSArn:
+    Type: String
+    Default: ''
+    Description: "Arn of the KMS Key used to encrypt the S3 bucket of the Project"
+
+  ApplicationName:
+    Type: String
+    Default: IAMRole
+    Description: "Name of the S3 bucket to grant access to"
+
+  AWSRegion:
+    Type: String
+    Description: "AWS GovCloud Region"
+    Default: "us-gov-west-1"
+    AllowedValues: [ "us-gov-west-1" ]
+
+Conditions:
+  IsGovCloud: !Equals [ !Ref "AWS::Partition", "aws-us-gov" ]
+
+Resources:
+  SFTPUserExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "{ProjectName}${Environment}${RoleName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - "transfer.amazonaws.com"
+          Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+      - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/CloudWatchLogsFullAccess"
+
+      Policies:
+      - PolicyName: "S3AccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "s3:GetObject"
+            - "s3:PutObject"
+            - "s3:GetObjectVersion"
+            - "s3:GetObjectACL"
+            - "s3:PutObjectACL"
+            - "s3:DeleteObject"
+            Resource:
+            - !Sub "arn:${AWS::Partition}:s3:::${S3BucketName}/sftp"
+            - !Sub "arn:${AWS::Partition}:s3:::${S3BucketName}/sftp/*"
+            Condition:{
+              StringEquals:{
+               "s3:ExistingObjectTag/environment":!Sub {Environment}
+              }
+            }
+          - Effect: "Allow"
+            Action:
+            - "s3:ListObjectsV2"
+            - "s3:GetBucketLocation"
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${S3BucketName}/sftp"
+          - Effect: "Deny"
+            Action:
+            - "s3:DeleteBucket"
+            - "s3:CreateBucket"
+            - "s3:PutBucketPolicy"
+            - "s3:ListAllMyBuckets"
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${S3BucketName}"
+          - Effect: "Deny"
+            Action:
+            - "s3:PutObject"
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${S3BucketName}/sftp/"
+
+      - PolicyName: "KMSAccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "kms:Decrypt"
+            - "kms:DescribeKey"
+            - "kms:GenerateDataKey"
+            - "kms:Encrypt"
+            Resource: !Ref KMSArn
+      Tags:
+      - Key: "Environment"
+        Value: !Ref Environment
+      - Key: "Name"
+        Value: !Sub "${ProjectName}-${Environment}-${RoleName}"
+      - Key: "ManagedBy"
+        Value: "CloudFormation"
+      - Key: "LastUpdated"
+        Value: !Ref "AWS::StackName"
+      - Key: "Region"
+        Value: !Ref AWSRegion
+
+Outputs:
+  SFTPUserExecutionRole:
+    Description: "The ARN of the SFTP User execution role"
+    Value: !GetAtt SFTPUserExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SFTPUserIAMRole"
+
+  SFTPUserExecutionRoleName:
+    Description: "The name of the Glue execution role"
+    Value: !Ref

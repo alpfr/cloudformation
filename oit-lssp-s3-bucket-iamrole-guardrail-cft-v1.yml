@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  BucketName:
+    Type: String
+    Description: "The name of the S3 bucket to allow GuardDuty to scan in AWS GovCloud (US-West-1)."
+
+  IAMRoleName:
+    Type: String
+    Description: "The name of the IAM role to be created for GuardDuty to assume in AWS GovCloud (US-West-1)."
+
+Resources:
+  GuardDutyS3AccessRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Ref IAMRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service: "guardduty.amazonaws.com"
+          Action: "sts:AssumeRole"
+      Policies:
+      - PolicyName: "GuardDutyS3AccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "s3:GetObject"
+            - "s3:ListBucket"
+            - "s3:GetBucketLocation"
+            - "s3:GetObjectTagging"
+            - "s3:GetBucketPolicy"
+            - "s3:GetBucketAcl"
+            Resource:
+            - !Sub "arn:aws-us-gov:s3:::${BucketName}"
+            - !Sub "arn:aws-us-gov:s3:::${BucketName}/*"
+Outputs:
+  RoleArn:
+    Value: !GetAtt GuardDutyS3AccessRole.Arn
+    Description: "ARN of the IAM role that allows GuardDuty to access the S3 bucket"

@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: API Gateway with Lambda Integration, CloudWatch Logging, and X-Ray tracing
+
+Parameters:
+  LambdaArn:
+    Type: String
+    Description: ARN of the Lambda function
+    AllowedPattern: "^arn:(aws|aws-us-gov):lambda:[a-z0-9-]+:[0-9]{12}:function:[a-zA-Z0-9-_]+.*$"
+    ConstraintDescription: Must be a valid Lambda function ARN.
+
+  StageName:
+    Type: String
+    Description: Stage name for API Gateway deployment
+    Default: prod
+    AllowedPattern: "[a-zA-Z0-9]+"
+    ConstraintDescription: Stage name can only contain alphanumeric characters.
+
+  PathPart:
+    Type: String
+    Description: Path part for the API Gateway resource
+    Default: "default_path"
+    AllowedPattern: "[a-zA-Z0-9_-]+"
+    ConstraintDescription: Path part can only contain alphanumeric characters, underscores, or dashes.
+
+  IpAddressCidr:
+    Type: CommaDelimitedList
+    Description: IP address CIDR(s) for API Gateway resource policy
+    Default: 192.168.0.0/16
+
+  ExistingApiRoleArn:
+    Type: String
+    Description: ARN of existing IAM role for API Gateway
+
+Resources:
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-api-${AWS::Region}"
+      Description: My API with Lambda integration
+      EndpointConfiguration:
+        Types:
+        - REGIONAL
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: !Ref PathPart
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws-us-gov:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaArn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws-us-gov:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - ApiGatewayMethod
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      Description: Initial deployment
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiGatewayDeployment
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref StageName
+      TracingEnabled: true
+      MethodSettings:
+      - ResourcePath: "/*"
+        HttpMethod: "*"
+        MetricsEnabled: true
+        DataTraceEnabled: true
+        LoggingLevel: INFO
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${PathPart}"
+
+  ApiId:
+    Description: API Gateway REST API ID
+    Value: !Ref ApiGatewayRestApi
+
+  ApiStageName:
+    Description: API Gateway Stage name
+    Value: !Ref StageName

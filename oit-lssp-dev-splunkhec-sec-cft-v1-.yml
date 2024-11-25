@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to create a Network Load Balancer with CloudWatch Logs
+Parameters:
+  SplunkUrl:
+    Description: >-
+      The full Splunk HEC URL (e.g., https://splunk.example.com:8088/services/collector)
+    Type: String
+    Default: 'https://162.138.206.49:8088/services/collector'
+  SplunkHECToken:
+    Description: Splunk HTTP Event Collector (HEC) Token
+    Type: String
+    NoEcho: true
+    Default: 67892b54-ba53-4187-9ecb-8bf3dc54a2e9
+  SplunkIndex:
+    Description: The Splunk Index where logs should be forwarded
+    Type: String
+    Default: 'splunk_demo'
+  SplunkSource:
+    Description: The source identifier for Splunk
+    Type: String
+    Default: '/var/log/audit'
+  SplunkSourceType:
+    Description: Splunk source type with splunk
+    Type: String
+    Default: unknow
+  SplunkLambdaProject:
+    Description: Enter in the project for the lambda function.
+    Type: String
+    Default: projectname
+  SplunkLambdaApplicationName:
+    Description: Enter in the application for the lambda function
+    Type: String
+    Default: lambda
+  SplunkLambdaPurpose:
+    Description: >-
+      Enter in the purpose for the lambda function. Used to build name of the function
+    Type: String
+    Default: ec2instancetosplunk
+  SplunkAppGroup:
+    Description: >-
+      Enter in the purpose for the lambda function. Used to build name of the function
+    Type: String
+    Default: appl
+  LogGroup:
+    Description: The name of the existing CloudWatch logs are stored
+    Type: String
+    Default: /linux/var/audit
+  LifeCycle:
+    Description: The name of the existing CloudWatch logs are stored
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - stage
+    - uat
+    - test
+    - prod
+  VPCList:
+    Description: The list of VPCs to associate with the Lambda function
+    Type: 'AWS::EC2::VPC::Id'
+  SubnetList:
+    Description: The list of subnets in the VPC for the Lambda function
+    Type: 'List<AWS::EC2::Subnet::Id>'
+  SplunkSecurityGroup:
+    Type: String
+    Description: Splunk HEC Egress
+    Default: sg-0d303a0fb5d669527
+    #Type: List<AWS::EC2::SecurityGroup::Id>
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+    - Label:
+        default: Lambda Configuration
+      Parameters:
+      - VPCList
+      - SubnetList
+      - LifeCycle
+    - Label:
+        default: Splunk Requirements
+      Parameters:
+      - SplunkUrl
+      - SplunkHECToken
+      - SplunkIndex
+      - SplunkSource
+      - SplunkLambdaProject
+      - SplunkLambdaApplicationName
+      - SplunkLambdaPurpose
+      - SplunkAppGroup
+      - LogGroup
+Resources:
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'oit-gusw1-lambda-ExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+      - >-
+        arn:aws-us-gov:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      - 'arn:aws-us-gov:iam::aws:policy/AmazonS3ReadOnlyAccess'
+  SplunkLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import gzip
+          import boto3
+          import logging
+          import os
+          import base64
+          import requests
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              splunk_url = os.environ['SPLUNK_URL']
+              splunk_token = os.environ['SPLUNK_HEC_TOKEN']
+              splunk_index = os.environ['SPLUNK_INDEX']
+              splunk_source = os.environ['SPLUNK_SOURCE']
+
+              # Iterate through S3 event records
+              for record in event['Records']:
+                  s3_bucket = record['s3']['bucket']['name']
+                  s3_key = record['s3']['object']['key']
+
+                  # Fetch the log file from S3
+                  s3_object = s3.get_object(Bucket=s3_bucket, Key=s3_key)
+                  compressed_data = s3_object['Body'].read()
+
+                  # Decompress the data
+                  uncompressed_data = gzip.decompress(compressed_data)
+                  log_data = json.loads(uncompressed_data)
+
+                  # Prepare the Splunk events
+                  splunk_events = []
+                  for log_event in log_data['logEvents']:
+                      splunk_event = {
+                          'time': log_event['timestamp'] / 1000,
+                          'host': log_data['logGroup'],
+                          'source': splunk_source,
+                          'sourcetype': '_json',
+                          'index': splunk_index,
+                          'event': log_event['message']
+                      }
+                      splunk_events.append(splunk_event)
+
+                  # Send the logs to Splunk HEC
+                  headers = {
+                      'Authorization': f'Splunk {splunk_token}',
+                      'Content-Type': 'application/json'
+                  }
+
+                  try:
+                      response = requests.post(splunk_url, headers=headers, data=json.dumps({"event": splunk_events}))
+                      response.raise_for_status()
+                      logger.info(f"Successfully sent logs to Splunk: {response.text}")
+                  except requests.exceptions.RequestException as e:
+                      logger.error(f"Error sending logs to Splunk: {e}")
+                      raise
+      Runtime: python3.8
+      Timeout: 30
+      VpcConfig:
+        SubnetIds: !Ref SubnetList
+        SecurityGroupIds:
+        - !Ref SplunkSecurityGroup
+        - !Ref SplunkEgressSecurityGroup
+      Environment:
+        Variables:
+          SPLUNK_URL: !Ref SplunkUrl
+          SPLUNK_HEC_TOKEN: !Ref SplunkHECToken
+          SPLUNK_INDEX: !Sub '${SplunkIndex}'
+          SPLUNK_SOURCETYPE: !Sub '${SplunkSourceType}'
+          SPLUNK_SOURCE: !Ref SplunkSource
+      MemorySize: 128
+  SplunkEgressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPCList
+      GroupDescription: Allow CloudWatch Log forward lambda to Splunk HEC
+      GroupName: SplunkHecEgress
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        Description: Splunk HEC endpoint
+        FromPort: 8088
+        ToPort: 8088
+        CidrIp: 162.138.206.49/23
+  LambdaSubscription:
+    Type: 'AWS::Logs::SubscriptionFilter'
+    DependsOn: LambdaInvokePermission
+    Properties:
+      DestinationArn: !Sub '${SplunkLambdaFunction.Arn}'
+      FilterPattern: ''
+      LogGroupName: !Sub '${LogGroup}'
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Sub '${SplunkLambdaFunction.Arn}'
+      Action: 'lambda:InvokeFunction'
+      Principal: logs.amazonaws.com
+      SourceArn: !Sub 'arn:aws-us-gov:logs:us-gov-west-1:075085867188:log-group:${LogGroup}:*'

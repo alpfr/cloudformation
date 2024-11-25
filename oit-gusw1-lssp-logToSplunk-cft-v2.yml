@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudFormation template to forward S3 logs to Splunk HEC in AWS GovCloud using Python 3"
+
+Parameters:
+  SplunkUrl:
+    Description: "The full Splunk HEC URL (e.g., https://splunk.example.com:8088/services/collector)"
+    Type: String
+    Default: "https://splunk.example.com:8088/services/collector"
+
+  SplunkHECToken:
+    Description: "Splunk HTTP Event Collector (HEC) Token"
+    Type: String
+    NoEcho: true
+
+  SplunkIndex:
+    Description: "The Splunk Index where logs should be forwarded"
+    Type: String
+    Default: "main"
+
+  SplunkSource:
+    Description: "The source identifier for Splunk"
+    Type: String
+    Default: "s3-logs"
+
+  S3BucketName:
+    Description: "The name of the S3 bucket where logs are stored"
+    Type: String
+
+  VPCId:
+    Description: "The VPC to associate with the Lambda function"
+    Type: AWS::EC2::VPC::Id
+
+  SubnetIds:
+    Description: "The list of subnets in the VPC for the Lambda function"
+    Type: List<AWS::EC2::Subnet::Id>
+
+  SecurityGroupIds:
+    Description: "The list of security groups for the Lambda function"
+    Type: List<AWS::EC2::SecurityGroup::Id>
+
+Resources:
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: "lambda.amazonaws.com"
+          Action: "sts:AssumeRole"
+      Policies:
+      - PolicyName: "S3AccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action:
+            - "s3:GetObject"
+            Resource: !Sub "arn:aws-us-gov:s3:::${S3BucketName}/*"
+      - PolicyName: "CloudWatchLogsPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action:
+            - "logs:CreateLogGroup"
+            - "logs:CreateLogStream"
+            - "logs:PutLogEvents"
+            Resource: "arn:aws-us-gov:logs:*:*:*"
+      - PolicyName: "VPCAccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action:
+            - "ec2:CreateNetworkInterface"
+            - "ec2:DescribeNetworkInterfaces"
+            - "ec2:DeleteNetworkInterface"
+            Resource: "*"
+
+  SplunkLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "index.lambda_handler"
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import gzip
+          import boto3
+          import logging
+          import os
+          import base64
+          import requests
+          from io import BytesIO
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              splunk_url = os.environ['SPLUNK_URL']
+              splunk_token = os.environ['SPLUNK_HEC_TOKEN']
+              splunk_index = os.environ['SPLUNK_INDEX']
+              splunk_source = os.environ['SPLUNK_SOURCE']
+
+              for record in event['Records']:
+                  s3_bucket = record['s3']['bucket']['name']
+                  s3_key = record['s3']['object']['key']
+
+                  s3_object = s3.get_object(Bucket=s3_bucket, Key=s3_key)
+                  compressed_data = s3_object['Body'].read()
+
+                  uncompressed_data = gzip.decompress(compressed_data)
+                  log_data = json.loads(uncompressed_data)
+
+                  splunk_events = []
+                  for log_event in log_data['logEvents']:
+                      splunk_event = {
+                          'time': log_event['timestamp'] / 1000,
+                          'host': log_data['logGroup'],
+                          'source': splunk_source,
+                          'sourcetype': '_json',
+                          'index': splunk_index,
+                          'event': log_event['message']
+                      }
+                      splunk_events.append(splunk_event)
+
+                  headers = {
+                      'Authorization': f'Splunk {splunk_token}',
+                      'Content-Type': 'application/json'
+                  }
+
+                  try:
+                      response = requests.post(splunk_url, headers=headers, json=splunk_events, verify=False)
+                      response.raise_for_status()
+                      logger.info(f"Successfully sent logs to Splunk: {response.text}")
+                  except requests.exceptions.RequestException as e:
+                      logger.error(f"Error sending logs to Splunk: {e}")
+                      raise
+
+      Runtime: "python3.9"
+      VpcConfig:
+        SubnetIds: !Ref SubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          SPLUNK_URL: !Ref SplunkUrl
+          SPLUNK_HEC_TOKEN: !Ref SplunkHECToken
+          SPLUNK_INDEX: !Ref SplunkIndex
+          SPLUNK_SOURCE: !Ref SplunkSource
+      MemorySize: 128
+      Timeout: 300
+
+  S3BucketNotification:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref S3BucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Event: "s3:ObjectCreated:*"
+          Function: !GetAtt SplunkLambdaFunction.Arn
+
+  LambdaInvokePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref SplunkLambdaFunction
+      Principal: "s3.amazonaws.com"
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !Sub "arn:aws-us-gov:s3:::${S3BucketName}"
+
+Outputs:
+  LambdaFunctionArn:
+    Description: "The ARN of the Lambda function"
+    Value: !GetAtt SplunkLambdaFunction.Arn
+
+  LambdaExecutionRoleArn:
+    Description: "The ARN of the Lambda execution role"
+    Value: !GetAtt LambdaExecutionRole.Arn
+
+  S3BucketNameOutput:
+    Description: "The name of the S3 bucket used for logs"
+    Value: !Ref S3BucketName

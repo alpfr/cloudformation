@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Lambda function and layer deployment'
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    AllowedValues: [ dev, test, staging, prod ]
+    Default: dev
+
+  FunctionPrefix:
+    Type: String
+    Description: Prefix for Lambda function S3 path
+    Default: mpc_pred_deploy
+    AllowedPattern: '^[a-zA-Z0-9-_/]+$'
+
+  LayerPrefix:
+    Type: String
+    Description: Prefix for Lambda layer S3 path
+    Default: mpc_pred_deploy
+    AllowedPattern: '^[a-zA-Z0-9-_/]+$'
+
+  LambdaFunctionS3Bucket:
+    Type: String
+    Description: S3 bucket containing Lambda function code
+    Default: 'a-usw2-dev-oit-lssp10-daba-sftp-000-lssp'
+    AllowedPattern: '^[0-9a-zA-Z.-]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$' # Updated to allow dots in bucket names
+
+  LambdaFunctionS3Key:
+    Type: String
+    Description: S3 key for Lambda function code zip file
+    Default: 'prod_L1_adhoc_invoker.zip'
+    AllowedPattern: '^[a-zA-Z0-9-_./]+\.zip$'
+
+  LambdaLayerS3Bucket:
+    Type: String
+    Description: S3 bucket containing Lambda layer code
+    Default: 'a-usw2-dev-oit-lssp10-daba-sftp-000-lssp'
+    AllowedPattern: '^[0-9a-zA-Z.-]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$' # Updated to allow dots in bucket names
+
+  LambdaLayerS3Key:
+    Type: String
+    Description: S3 key for Lambda layer code zip file
+    Default: 'psqlv7-af37f933-bb38-423c-ad41-a28b6628f1ff.zip'
+    AllowedPattern: '^[a-zA-Z0-9-_./]+\.zip$'
+
+  FunctionName:
+    Type: String
+    Description: Name of the Lambda function
+    Default: 'prod_L1_adhoc_invoker'
+    MinLength: 1
+    MaxLength: 64
+
+  LayerName:
+    Type: String
+    Description: Name of the Lambda layer
+    Default: 'psqlv7'
+    AllowedPattern: '[a-zA-Z0-9-_]+'
+    MinLength: 1
+    MaxLength: 64
+
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the Lambda execution role
+    Default: 'arn:aws-us-gov:iam::075085867188:role/stage-StageLambdaExecutionRole-govcloud'
+    AllowedPattern: '^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+'
+
+  DbSecretArn:
+    Type: String
+    Description: ARN of the Secret Manager Arn
+    Default: 'arn:aws-us-gov:secretsmanager:us-gov-west-1:075085867188:secret:stage/lssp/postgresql/lsspappuser-aZCIi3'
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID of the VPC
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: IDs of the subnets
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: IDs of the security groups
+
+Mappings:
+  EnvironmentConfig:
+    dev:
+      memory: 128
+      timeout: 30
+      retries: 0
+      maxConcurrency: 5
+    test:
+      memory: 256
+      timeout: 60
+      retries: 1
+      maxConcurrency: 10
+    staging:
+      memory: 512
+      timeout: 120
+      retries: 2
+      maxConcurrency: 20
+    prod:
+      memory: 1024
+      timeout: 300
+      retries: 2
+      maxConcurrency: 50
+
+Resources:
+  LambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub '${LayerName}'
+      Description: !Sub 'Lambda layer for ${LayerName}'
+      Content:
+        S3Bucket: !Ref LambdaLayerS3Bucket
+        S3Key: !Sub '${LayerPrefix}/${LambdaLayerS3Key}'
+      CompatibleRuntimes:
+      - python3.8
+      CompatibleArchitectures:
+      - x86_64
+      - arm64
+    DeletionPolicy: Retain
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${FunctionName}'
+      Runtime: python3.8
+      Handler: index.handler
+      Role: !Ref ExecutionRoleArn
+      Code:
+        S3Bucket: !Ref LambdaFunctionS3Bucket
+        S3Key: !Sub '${FunctionPrefix}/${LambdaFunctionS3Key}'
+      Layers:
+      - !Ref LambdaLayer
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds: !Ref SubnetIds
+      MemorySize: !FindInMap [ EnvironmentConfig, !Ref Environment, memory ]
+      Timeout: !FindInMap [ EnvironmentConfig, !Ref Environment, timeout ]
+      ReservedConcurrentExecutions: !FindInMap [ EnvironmentConfig, !Ref Environment, maxConcurrency ]
+      Environment:
+        Variables:
+          BUCKET: !Ref LambdaFunctionS3Bucket
+          SECRET_ARN: !Ref DbSecretArn
+      TracingConfig:
+        Mode: Active
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Function
+        Value: !Ref FunctionName
+    DeletionPolicy: Retain
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FunctionName}'
+      RetentionInDays: !If [ IsProd, 90, 30 ]
+    DeletionPolicy: Retain
+
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${FunctionName}-errors'
+      AlarmDescription: !Sub 'Lambda function ${FunctionName} error rate exceeded threshold'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: missing # Added property to handle missing data
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref LambdaFunction
+
+  DurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${FunctionName}-duration'
+      AlarmDescription: !Sub 'Lambda function ${FunctionName} duration exceeded threshold'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !FindInMap [ EnvironmentConfig, !Ref Environment, timeout ]
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref LambdaFunction
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, 'prod' ]
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaFunctionArn'
+
+  LambdaFunctionName:
+    Description: Name of the Lambda function
+    Value: !Ref LambdaFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaFunctionName'
+
+  LambdaLayerArn:
+    Description: ARN of the Lambda layer with version
+    Value: !Ref LambdaLayer # Updated to reference the ARN with version
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaLayerArn'
+
+  LogGroupName:
+    Description: Name of the CloudWatch Log Group
+    Value: !Ref LambdaLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroupName'
+
+  VpcId:
+    Description: VPC ID for Lambda function
+    Value: !Ref VpcId
+
+  SubnetIds:
+    Description: List of Subnet IDs for Lambda function
+    Value: !Join [ ",", !Ref SubnetIds ]
+
+  SecurityGroupIds:
+    Description: List of Security Group IDs for Lambda function
+    Value: !Join [ ",", !Ref SecurityGroupIds ]
+
+  FunctionS3Path:
+    Description: Full S3 path for Lambda function code
+    Value: !Sub '${LambdaFunctionS3Bucket}/${FunctionPrefix}/${LambdaFunctionS3Key}'
+
+  LayerS3Path:
+    Description: Full S3 path for Lambda layer code
+    Value: !Sub '${LambdaLayerS3Bucket}/${LayerPrefix}/${LambdaLayerS3Key}'

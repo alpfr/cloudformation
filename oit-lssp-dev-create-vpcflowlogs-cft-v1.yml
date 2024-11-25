@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to create VPC Flow Logs with both CloudWatch Logs and S3 destinations
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Name of the project
+    AllowedPattern: "[a-zA-Z0-9-]+"
+    ConstraintDescription: Only alphanumeric characters and hyphens are allowed
+
+  ApplicationName:
+    Type: String
+    Description: Name of the application
+    AllowedPattern: "[a-zA-Z0-9-]+"
+    ConstraintDescription: Only alphanumeric characters and hyphens are allowed
+
+  ProjectOwner:
+    Type: String
+    Description: Owner of the project
+    AllowedPattern: "[a-zA-Z ]+"
+    ConstraintDescription: Only alphabets and spaces are allowed
+
+  Environment:
+    Type: String
+    Description: The environment (e.g., dev, test, prod)
+    Default: 'dev'
+    AllowedValues:
+    - dev
+    - test
+    - stage
+    - prod
+    ConstraintDescription: Must be one of dev, test, stage, prod
+
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: The ID of the VPC for which the Flow Logs will be created
+
+  ExistingS3BucketName:
+    Type: String
+    Description: The name of the existing S3 bucket for storing VPC Flow Logs
+
+  IAMRoleArn:
+    Type: String
+    Description: The ARN of the IAM role for VPC Flow Logs
+    Default: 'arn:aws-us-gov:iam::075085867188:role/lssp10-vpcflowlogrole-dev-vpc-flow-logs-role'
+
+  RetentionDays:
+    Type: String
+    Description: Number of days to retain CloudWatch logs
+    AllowedValues: [ '1', '7', '14', '30', '60', '90', '180', '365', '731' ]
+    Default: '14'
+
+  MaxAggregationInterval:
+    Type: Number
+    Description: Maximum interval in seconds between flow log captures
+    AllowedValues: [ 60, 600 ]
+    Default: 600
+
+  Tags:
+    Type: CommaDelimitedList
+    Description: Additional tags for the resources (key1=value1,key2=value2)
+    Default: ""
+
+Resources:
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vpc/${ProjectName}-${Environment}-flow-logs'
+      RetentionInDays: !Ref RetentionDays
+      Tags:
+      - key: Name
+        value: !Sub '${ProjectName}-${Environment}-flow-logs'
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: ProjectName
+        Value: !Ref ProjectName
+      - Key: ApplicationName
+        Value: !Ref ApplicationName
+      - Key: ProjectOwner
+        Value: !Ref ProjectOwner
+
+  CloudWatchFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref VPCId
+      ResourceType: 'VPC'
+      TrafficType: 'ALL'
+      LogDestinationType: 'cloud-watch-logs'
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !Ref IAMRoleArn
+      MaxAggregationInterval: !Ref MaxAggregationInterval
+      Tags:
+      - key: Name
+        value: !Sub '${ProjectName}-${Environment}-flow-logs'
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: ProjectName
+        Value: !Ref ProjectName
+      - Key: ApplicationName
+        Value: !Ref ApplicationName
+      - Key: ProjectOwner
+        Value: !Ref ProjectOwner
+
+  S3FlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref VPCId
+      ResourceType: 'VPC'
+      TrafficType: 'ALL'
+      LogDestinationType: 's3'
+      LogDestination: !Sub 'arn:aws-us-gov:s3:::${ExistingS3BucketName}/vpc-flow-logs/${AWS::AccountId}/${AWS::Region}/'
+      MaxAggregationInterval: !Ref MaxAggregationInterval
+      DestinationOptions:
+        FileFormat: 'parquet'
+        HiveCompatiblePartitions: true
+        PerHourPartition: true
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: ProjectName
+        Value: !Ref ProjectName
+      - Key: ApplicationName
+        Value: !Ref ApplicationName
+      - Key: ProjectOwner
+        Value: !Ref ProjectOwner
+
+Outputs:
+  CloudWatchFlowLogId:
+    Description: ID of the CloudWatch VPC Flow Log
+    Value: !Ref CloudWatchFlowLog
+
+  S3FlowLogId:
+    Description: ID of the S3 VPC Flow Log
+    Value: !Ref S3FlowLog
+
+  FlowLogGroupName:
+    Description: Name of the CloudWatch Logs group for VPC Flow Logs
+    Value: !Ref FlowLogGroup
+
+  S3FlowLogDestination:
+    Description: S3 destination path for VPC Flow Logs
+    Value: !Sub 's3://${ExistingS3BucketName}/vpc-flow-logs/${AWS::AccountId}/${AWS::Region}/'

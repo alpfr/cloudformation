@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  SourceBucketName:
+    Type: String
+    Description: Name of the existing source S3 bucket
+  DestinationBucketName:
+    Type: String
+    Description: Name of the existing destination S3 bucket
+  DestinationAccountId:
+    Type: String
+    Description: AWS Account ID where the destination bucket exists
+  SourcePrefix:
+    Type: String
+    Description: Prefix for source bucket objects
+    Default: ''
+  SourceKMSKeyId:
+    Type: String
+    Description: KMS Key ID for existing source bucket
+  DestinationKMSKeyArn:
+    Type: String
+    Description: KMS Key ARN for existing destination bucket
+
+Resources:
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: s3.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: ReplicationPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          # Source bucket permissions
+          - Effect: Allow
+            Action:
+            - s3:GetReplicationConfiguration
+            - s3:ListBucket
+            - s3:GetObjectVersion
+            - s3:GetObjectVersionAcl
+            - s3:GetObjectVersionTagging
+            - s3:ReplicateDelete
+            - s3:ReplicateTags
+            Resource:
+            - !Sub 'arn:aws-us-gov:s3:::${SourceBucketName}'
+            - !Sub 'arn:aws-us-gov:s3:::${SourceBucketName}/*'
+          # Source KMS permissions
+          - Effect: Allow
+            Action:
+            - kms:Decrypt
+            - kms:DescribeKey
+            Resource:
+            - !Sub 'arn:aws-us-gov:kms:${AWS::Region}:${AWS::AccountId}:key/${SourceKMSKeyId}'
+          # Destination bucket permissions
+          - Effect: Allow
+            Action:
+            - s3:ReplicateObject
+            - s3:ReplicateDelete
+            - s3:ReplicateTags
+            - s3:GetObjectVersion
+            - s3:GetObjectVersionAcl
+            - s3:GetObjectVersionTagging
+            - s3:ObjectOwnerOverrideToBucketOwner
+            Resource:
+            - !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}'
+            - !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}/*'
+          # Destination KMS permissions
+          - Effect: Allow
+            Action:
+            - kms:Encrypt
+            - kms:GenerateDataKey
+            Resource:
+            - !Ref DestinationKMSKeyArn
+
+  SourceBucketReplicationConfiguration:
+    Type: Custom::S3BucketReplication
+    Properties:
+      ServiceToken: !GetAtt ReplicationFunction.Arn
+      BucketName: !Ref SourceBucketName
+      ReplicationConfiguration:
+        Role: !GetAtt ReplicationRole.Arn
+        Rules:
+        - ID: ReplicationRule1
+          Status: Enabled
+          Priority: 1
+          DeleteMarkerReplication:
+            Status: Enabled
+          Filter:
+            Prefix: !Ref 'SourcePrefix'
+          Destination:
+            Bucket: !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}'
+            Account: !Ref DestinationAccountId
+            StorageClass: STANDARD
+            AccessControlTranslation:
+              Owner: Destination
+            EncryptionConfiguration:
+              ReplicaKmsKeyID: !Ref DestinationKMSKeyArn
+          SourceSelectionCriteria:
+            SseKmsEncryptedObjects:
+              Status: Enabled
+
+  ReplicationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+            try:
+              if event['RequestType'] in ['Create', 'Update']:
+                s3 = boto3.client('s3')
+                bucket = event['ResourceProperties']['BucketName']
+                config = event['ResourceProperties']['ReplicationConfiguration']
+                s3.put_bucket_replication(
+                  Bucket=bucket,
+                  ReplicationConfiguration=config
+                )
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+            except Exception as e:
+              cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+      Runtime: python3.9
+      Timeout: 60
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws-us-gov:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: S3Access
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutBucketReplication
+            Resource: !Sub 'arn:aws-us-gov:s3:::${SourceBucketName}'
+
+Outputs:
+  ReplicationRoleArn:
+    Value: !GetAtt ReplicationRole.Arn
+    Description: Replication role ARN in GovCloud

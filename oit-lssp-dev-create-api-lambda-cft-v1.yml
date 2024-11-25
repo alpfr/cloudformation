@@ -1,0 +1,336 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for API Gateway integration with Lambda function from S3 bucket and database configuration'
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    AllowedValues:
+    - dev
+    - test
+    - uat
+    - prod
+    Default: dev
+
+  ApplicationName:
+    Type: String
+    Description: Name of the application
+    Default: 'api-l1-batch-invoke'
+
+  ApiName:
+    Type: String
+    Description: Name of the application
+    Default: 'UAT_L1_batch_invoke'
+
+  NotificationEmail:
+    Type: String
+    Description: Email address to receive error notifications
+    Default: 'tola.adesanya@afs.com'
+    AllowedPattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must be a valid email address
+
+  BucketName:
+    Type: String
+    Description: S3 Bucket Name
+    AllowedPattern: '[a-zA-Z0-9.-]*'
+    Default: 'a-usw2-dev-oit-lssp10-daba-sftp-000-lssp'
+    ConstraintDescription: 'Bucket name can include numbers, lowercase letters, uppercase letters, periods (.), and hyphens (-)'
+
+  LambdaS3Bucket:
+    Type: String
+    Default: 'a-usw2-dev-oit-lssp10-daba-sftp-000-lssp'
+    Description: S3 bucket containing the Lambda function code
+
+  LambdaS3Key:
+    Type: String
+    Default: ''
+    Description: S3 key for the Lambda function code (ZIP file)
+
+  LambdaFunctionInq:
+    Type: String
+    Default: ''
+    Description: Arn for the Lambda function
+
+  LambdaFunctionRpt:
+    Type: String
+    Default: ''
+    Description: Arn for the Lambda function
+
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where Lambda function will be deployed
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of Subnet IDs where Lambda function will be deployed
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: List of Security Group IDs for Lambda function
+
+  ExistingLambdaRoleArn:
+    Type: String
+    Description: ARN of existing IAM role for Lambda function
+    Default: 'arn:aws-us-gov:iam::075085867188:role/ddd-LambdaExecutionRole-F5F8qFY5TIWC'
+
+  # Database Parameters
+  DBHost:
+    Type: String
+    Default: 'rds-6-rdatabase-test-rdatabase-6bptblnjhweq.cgyeypus3fll.us-gov-west-1.rds.amazonaws.com'
+    Description: Database host address
+    NoEcho: false
+
+  DBPort:
+    Type: Number
+    Description: Database port number
+    Default: 5432
+    MinValue: 1024
+    MaxValue: 65535
+
+  DBName:
+    Type: String
+    Description: Database name
+    MinLength: 1
+    MaxLength: 64
+    Default: 'testlssppgdb'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9_]*'
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters and underscores
+
+  DBUser:
+    Type: String
+    Description: Database username
+    MinLength: 1
+    MaxLength: 16
+    Default: 'lssp_appuser'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9_]*'
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters and underscores
+    NoEcho: false
+
+  DBPassword:
+    Type: String
+    Description: Database password
+    Default: '3!$LsPtE$t'
+    MinLength: 8
+    NoEcho: true
+
+Mappings:
+  EnvironmentMap:
+    dev:
+      memory: 128
+      timeout: 30
+      dbhost: 'dev-db.example.com'
+    test:
+      memory: 128
+      timeout: 30
+      dbhost: 'test-db.example.com'
+    uat:
+      memory: 256
+      timeout: 60
+      dbhost: 'uat-db.example.com'
+    prod:
+      memory: 512
+      timeout: 90
+      dbhost: 'prod-db.example.com'
+
+Resources:
+  # AWS Secrets Manager for Database Credentials
+  DatabaseSecret:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: !Sub '${ApplicationName}-${Environment}-db-credentials'
+      Description: 'Database credentials for the application'
+      SecretString: !Sub |
+        {
+          "username": "${DBUser}",
+          "password": "${DBPassword}",
+          "host": "${DBHost}",
+          "port": ${DBPort},
+          "dbname": "${DBName}"
+        }
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+      - Key: DatabaseHost
+        Value: !Ref DBHost
+      - Key: DatabaseName
+        Value: !Ref DBName
+      - Key: DatabaseUser
+        Value: !Ref DBUser
+      - Key: DatabasePort
+        Value: !Ref DBPort
+
+  ImportedLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ApplicationName}-${Environment}-imported-lambda'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !Ref ExistingLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          SNS_TOPIC_ARN: !Ref ErrorNotificationTopic
+          BUCKET: !Ref BucketName
+          DB_SECRET_ARN: !Ref DatabaseSecret
+          DB_HOST: !Ref DBHost
+          DB_PORT: !Ref DBPort
+          DB_NAME: !Ref DBName
+          DB_USER: !Ref DBUser
+          L2_BATCH_INQ_FUCTION: !Ref LambdaFunctionInq
+          L2_BATCH_RPT_FUCTION: !Ref LambdaFunctionRpt
+      Timeout: !FindInMap [EnvironmentMap, !Ref Environment, timeout]
+      MemorySize: !FindInMap [EnvironmentMap, !Ref Environment, memory]
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds: !Ref SubnetIds
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+      - Key: DatabaseHost
+        Value: !Ref DBHost
+      - Key: DatabaseName
+        Value: !Ref DBName
+      - Key: DatabaseUser
+        Value: !Ref DBUser
+      - Key: DatabasePort
+        Value: !Ref DBPort
+
+  # API Gateway
+  LambdaApi:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub '${ApplicationName}-${Environment}-api'
+      EndpointConfiguration:
+        Types:
+        - REGIONAL
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+
+  ApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref LambdaApi
+      ParentId: !GetAtt 'LambdaApi.RootResourceId'
+      PathPart: 'execute'
+
+  ApiMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref LambdaApi
+      ResourceId: !Ref ApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws-us-gov:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ImportedLambdaFunction.Arn}/invocations'
+
+  ApiDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn: ApiMethod
+    Properties:
+      RestApiId: !Ref LambdaApi
+
+  ApiStage:
+    Type: 'AWS::ApiGateway::Stage'
+    Properties:
+      DeploymentId: !Ref ApiDeployment
+      RestApiId: !Ref LambdaApi
+      StageName: !Ref Environment
+      MethodSettings:
+      - ResourcePath: '/*'
+        HttpMethod: '*'
+        MetricsEnabled: true
+        DataTraceEnabled: true
+        LoggingLevel: ERROR
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+      - Key: DatabaseHost
+        Value: !Ref DBHost
+      - Key: DatabaseName
+        Value: !Ref DBName
+      - Key: DatabaseUser
+        Value: !Ref DBUser
+      - Key: DatabasePort
+        Value: !Ref DBPort
+
+  # Lambda Permission for API Gateway
+  LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref ImportedLambdaFunction
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub 'arn:aws-us-gov:execute-api:${AWS::Region}:${AWS::AccountId}:${LambdaApi}/*'
+
+  # SNS Topic for Error Notifications
+  ErrorNotificationTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub '${ApplicationName}-${Environment}-error-notifications'
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Application
+        Value: !Ref ApplicationName
+
+  ErrorNotificationSubscription:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      TopicArn: !Ref ErrorNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+Outputs:
+  ApiUrl:
+    Value: !Sub 'https://${LambdaApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/execute'
+    Description: API Gateway URL for the current environment
+
+  LambdaFunctionName:
+    Value: !Ref ImportedLambdaFunction
+    Description: Imported Lambda function name
+
+  LambdaFunctionArn:
+    Value: !GetAtt ImportedLambdaFunction.Arn
+    Description: Imported Lambda function ARN
+
+  DatabaseSecretArn:
+    Value: !Ref DatabaseSecret
+    Description: ARN of the database credentials secret
+
+  Environment:
+    Value: !Ref Environment
+    Description: Deployment Environment
+
+  VpcConfig:
+    Description: VPC Configuration for Lambda
+    Value: !Join
+    - ''
+    - - 'VPC: '
+      - !Ref VpcId
+      - ', Subnets: '
+      - !Join
+        - ','
+        - !Ref SubnetIds
+      - ', Security Groups: '
+      - !Join
+        - ','
+        - !Ref SecurityGroupIds
+
+  ErrorNotificationTopicArn:
+    Value: !Ref ErrorNotificationTopic
+    Description: SNS Topic ARN for error notifications

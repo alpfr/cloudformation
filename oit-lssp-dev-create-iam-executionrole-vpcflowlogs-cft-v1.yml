@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Role for VPC Flow Logs with existing S3 bucket and CloudWatch Logs in AWS GovCloud'
+
+Parameters:
+  ExistingBucketName:
+    Type: String
+    Description: 'Name of the existing S3 bucket for VPC Flow Logs'
+  Environment:
+    Type: String
+    Description: 'Environment (e.g., dev, prod, staging)'
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+  ProjectName:
+    Type: String
+    Description: 'Name of the project'
+  ApplicationName:
+    Type: String
+    Description: 'Name of the application'
+  Region:
+    Type: String
+    Description: 'AWS GovCloud Region'
+    AllowedValues:
+    - us-gov-west-1
+    - us-gov-east-1
+
+Resources:
+  VPCFlowLogsRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${ProjectName}-${ApplicationName}-${Environment}-vpc-flow-logs-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - vpc-flow-logs.amazonaws.com
+            - delivery.logs.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: !Sub '${ProjectName}-${ApplicationName}-${Environment}-vpc-flow-logs-cloudwatch-policy'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:DescribeLogGroups
+            - logs:DescribeLogStreams
+            Resource: !Sub 'arn:aws-us-gov:logs:${Region}:${AWS::AccountId}:log-group:*'
+      - PolicyName: !Sub '${ProjectName}-${ApplicationName}-${Environment}-vpc-flow-logs-s3-policy'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            - s3:GetBucketPolicy
+            - s3:GetObject
+            Resource:
+            - !Sub 'arn:aws-us-gov:s3:::${ExistingBucketName}'
+            - !Sub 'arn:aws-us-gov:s3:::${ExistingBucketName}/*'
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: ProjectName
+        Value: !Ref ProjectName
+      - Key: ApplicationName
+        Value: !Ref ApplicationName
+      - Key: Region
+        Value: !Ref Region
+      - Key: ManagedBy
+        Value: CloudFormation
+
+Outputs:
+  RoleARN:
+    Description: 'ARN of the VPC Flow Logs IAM Role'
+    Value: !GetAtt VPCFlowLogsRole.Arn

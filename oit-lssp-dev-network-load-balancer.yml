@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to create a Network Load Balancer using an existing VPC security group, without TLS termination
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: "Network Configuration"
+      Parameters:
+      - VPCId
+      - SubnetIds
+      - TargetSecurityGroupId
+    - Label:
+        default: "Load Balancer Configuration"
+      Parameters:
+      - LoadBalancerName
+      - LoadBalancerPort
+      - LoadBalancerProtocol
+    - Label:
+        default: "Target Group Configuration"
+      Parameters:
+      - TargetGroupName
+      - TargetPort
+      - TargetGroupProtocol
+      - HealthCheckProtocol
+      - HealthCheckPort
+    - Label:
+        default: "Target Configuration"
+      Parameters:
+      - PrivateIP1
+      - PrivateIP2
+    - Label:
+        default: "Tagging Configuration"
+      Parameters:
+      - Environment
+      - Project
+      - Owner
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the load balancer and target group will be created
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of public subnet IDs for the load balancer
+  TargetSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ID of an existing security group to use for the targets
+  LoadBalancerName:
+    Type: String
+    Default: my-network-load-balancer
+    Description: Name of the Network Load Balancer
+  TargetGroupName:
+    Type: String
+    Default: my-target-group
+    Description: Name of the Target Group
+  LoadBalancerPort:
+    Type: Number
+    Default: 22
+    Description: Port on which the load balancer listens
+  TargetPort:
+    Type: Number
+    Default: 22
+    Description: Port on which targets are listening
+  LoadBalancerProtocol:
+    Type: String
+    Default: TCP
+    AllowedValues:
+    - TCP
+    Description: Protocol for the load balancer listener
+  TargetGroupProtocol:
+    Type: String
+    Default: TCP
+    AllowedValues:
+    - TCP
+    Description: Protocol for the target group
+  HealthCheckProtocol:
+    Type: String
+    Default: TCP
+    AllowedValues:
+    - TCP
+    Description: Protocol for health checks
+  HealthCheckPort:
+    Type: Number
+    Default: 22
+    Description: Port for health checks
+  PrivateIP1:
+    Type: String
+    Description: Private IP address of the first target
+  PrivateIP2:
+    Type: String
+    Description: Private IP address of the second target
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - test
+    - staging
+    - prod
+    Description: Environment for the resources
+  Project:
+    Type: String
+    Description: Project name for the resources
+  Owner:
+    Type: String
+    Description: Owner of the resources (e.g., team or individual name)
+
+Resources:
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Ref LoadBalancerName
+      Subnets: !Ref SubnetIds
+      Type: network
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: deletion_protection.enabled
+        Value: true
+      - Key: load_balancing.cross_zone.enabled
+        Value: true
+      Tags:
+      - Key: Name
+        Value: !Ref LoadBalancerName
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: ManagedBy
+        Value: CloudFormation
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Ref TargetGroupName
+      VpcId: !Ref VPCId
+      Protocol: !Ref TargetGroupProtocol
+      Port: !Ref TargetPort
+      TargetType: ip
+      HealthCheckProtocol: !Ref HealthCheckProtocol
+      HealthCheckPort: !Ref HealthCheckPort
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Targets:
+      - Id: !Ref PrivateIP1
+        Port: !Ref TargetPort
+      - Id: !Ref PrivateIP2
+        Port: !Ref TargetPort
+      Tags:
+      - Key: Name
+        Value: !Ref TargetGroupName
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: ManagedBy
+        Value: CloudFormation
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Protocol: !Ref LoadBalancerProtocol
+      Port: !Ref LoadBalancerPort
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref TargetGroup
+      Tags:
+      - Key: Name
+        Value: !Sub ${LoadBalancerName}-listener
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: ManagedBy
+        Value: CloudFormation
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: DNS name of the Network Load Balancer
+    Value: !GetAtt NetworkLoadBalancer.DNSName
+  LoadBalancerArn:
+    Description: ARN of the Network Load Balancer
+    Value: !Ref NetworkLoadBalancer
+  TargetGroupArn:
+    Description: ARN of the Target Group
+    Value: !Ref TargetGroup
+  TargetSecurityGroupId:
+    Description: ID of the Security Group for targets
+    Value: !Ref TargetSecurityGroupId

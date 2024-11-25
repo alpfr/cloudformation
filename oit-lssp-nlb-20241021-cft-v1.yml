@@ -1,0 +1,253 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to create a Network Load Balancer with CloudWatch Logs
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: "Network Configuration"
+      Parameters:
+      - VPCId
+      - SubnetIds
+      - LoadBalancerSecurityGroupId
+      - TargetSecurityGroupId
+    - Label:
+        default: "Load Balancer Configuration"
+      Parameters:
+      - LoadBalancerPort
+      - LoadBalancerProtocol
+    - Label:
+        default: "Target Group Configuration"
+      Parameters:
+      - TargetGroupName
+      - TargetPort
+      - TargetGroupProtocol
+      - HealthCheckProtocol
+      - HealthCheckPort
+    - Label:
+        default: "Target Configuration"
+      Parameters:
+      - PrivateIP1
+      - PrivateIP2
+    - Label:
+        default: "Tagging Configuration"
+      Parameters:
+      - Environment
+      - Project
+      - Owner
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the load balancer and target group will be created
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of public subnet IDs for the load balancer
+  LoadBalancerSecurityGroupId:
+    Type: String
+    Description: ID of the security group for the load balancer (optional)
+    Default: 'sg-00adf19222b6ea62a'
+  TargetSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ID of an existing security group to use for the targets
+  TargetGroupName:
+    Type: String
+    Default: 'oit-lssp-prod-nlb-001-target-group'
+    Description: Name of the Target Group
+  LoadBalancerPort:
+    Type: Number
+    Default: 22
+    Description: Port on which the load balancer listens
+  TargetPort:
+    Type: Number
+    Default: 22
+    Description: Port on which targets are listening
+  LoadBalancerProtocol:
+    Type: String
+    Default: TCP
+    AllowedValues:
+    - TCP
+    Description: Protocol for the load balancer listener
+  TargetGroupProtocol:
+    Type: String
+    Default: TCP
+    AllowedValues:
+    - TCP
+    Description: Protocol for the target group
+  HealthCheckProtocol:
+    Type: String
+    Default: TCP
+    AllowedValues:
+    - TCP
+    Description: Protocol for health checks
+  HealthCheckPort:
+    Type: Number
+    Default: 22
+    Description: Port for health checks
+  PrivateIP1:
+    Type: String
+    Default: 10.24.1.57
+    Description: Private IP address of the first target
+  PrivateIP2:
+    Type: String
+    Default: 10.24.1.159
+    Description: Private IP address of the second target
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+    - dev
+    - test
+    - staging
+    - prod
+    Description: Environment for the resources
+  CloudWatchLogsEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+  Project:
+    Type: String
+    Default: 'oit-gusw1-lssp-prod-nlb-001'
+    Description: Project name for the resources
+  Owner:
+    Type: String
+    Default: 'Daniel Sharma'
+    Description: Owner of the resources (e.g., team or individual name)
+  LogRetentionInDays:
+    Type: Number
+    Default: 90
+    Description: Number of days to retain CloudWatch Logs
+    AllowedValues:
+    - 1
+    - 3
+    - 5
+    - 7
+    - 14
+    - 30
+    - 60
+    - 90
+    - 120
+    - 150
+    - 180
+    - 365
+    - 400
+    - 545
+    - 731
+    - 1827
+    - 3653
+
+Conditions:
+  UseLoadBalancerSecurityGroup: !Not [!Equals [!Ref LoadBalancerSecurityGroupId, '']]
+  EnableCloudWatchLogs: !Equals [!Ref CloudWatchLogsEnabled, 'true']
+
+Resources:
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${AWS::StackName}-nlb
+      Subnets: !Ref SubnetIds
+      Type: network
+      Scheme: internet-facing
+      SecurityGroups: !If
+      - UseLoadBalancerSecurityGroup
+      - [!Ref LoadBalancerSecurityGroupId]
+      - !Ref AWS::NoValue
+      LoadBalancerAttributes:
+      - Key: deletion_protection.enabled
+        Value: true
+      - Key: load_balancing.cross_zone.enabled
+        Value: true
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-nlb
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: ManagedBy
+        Value: CloudFormation
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AWS::StackName}-tg
+      VpcId: !Ref VPCId
+      Protocol: !Ref TargetGroupProtocol
+      Port: !Ref TargetPort
+      TargetType: ip
+      HealthCheckProtocol: !Ref HealthCheckProtocol
+      HealthCheckPort: !Ref HealthCheckPort
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Targets:
+      - Id: !Ref PrivateIP1
+        Port: !Ref TargetPort
+      - Id: !Ref PrivateIP2
+        Port: !Ref TargetPort
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-tg
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: ManagedBy
+        Value: CloudFormation
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Protocol: !Ref LoadBalancerProtocol
+      Port: !Ref LoadBalancerPort
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref TargetGroup
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-listener
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: ManagedBy
+        Value: CloudFormation
+
+  # CloudWatch Log Group for NLB Logs
+  LoadBalancerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticloadbalancing/${AWS::StackName}-nlb
+      RetentionInDays: !Ref LogRetentionInDays
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-loggroup
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+      - Key: Owner
+        Value: !Ref Owner
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: DNS name of the Network Load Balancer
+    Value: !GetAtt NetworkLoadBalancer.DNSName
+  LoadBalancerArn:
+    Description: ARN of the Network Load Balancer
+    Value: !Ref NetworkLoadBalancer
+  TargetGroupArn:
+    Description: ARN of the Target Group
+    Value: !Ref TargetGroup
+  TargetSecurityGroupId:
+    Description: ID of the Security Group for targets
+    Value: !Ref TargetSecurityGroupId

@@ -1,0 +1,252 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Enhanced CloudFormation template for creating environment-specific
+  security groups in AWS GovCloud"
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: "General Configuration"
+      Parameters:
+      - VpcId
+      - Environment
+      - ApplicationName
+      - SecurityGroupSuffix
+      - SecurityGroupDescription
+    - Label:
+        default: "Inbound Rules Configuration"
+      Parameters:
+      - InboundRulesEnabled
+      - InboundIpProtocol
+      - InboundFromPort
+      - InboundToPort
+      - InboundCidrIp
+      - AllowInternalVpcTraffic
+    - Label:
+        default: "Outbound Rules Configuration"
+      Parameters:
+      - OutboundRulesEnabled
+      - EgressIpProtocol
+      - EgressFromPort
+      - EgressToPort
+      - EgressCidrIp
+      - RestrictOutboundTraffic
+
+Parameters:
+  VpcId:
+    Type: "AWS::EC2::VPC::Id"
+    Description: "Select the VPC where the security group will be created"
+
+  Environment:
+    Type: String
+    Default: "dev"
+    AllowedValues:
+    - "dev"
+    - "test"
+    - "prod"
+    Description: "Environment for the security group"
+
+  ApplicationName:
+    Type: String
+    Description: "Name of the application or service (will be included in the
+      security group name)"
+    MinLength: 1
+    MaxLength: 50
+    AllowedPattern: "[-a-zA-Z0-9]+"
+    ConstraintDescription: "Only alphanumeric characters and hyphens allowed"
+
+  SecurityGroupSuffix:
+    Type: String
+    Default: "sg"
+    Description: "Suffix for the security group name"
+    MinLength: 1
+    MaxLength: 20
+    AllowedPattern: "[-a-zA-Z0-9]+"
+    ConstraintDescription: "Only alphanumeric characters and hyphens allowed"
+
+  SecurityGroupDescription:
+    Type: String
+    Default: "Custom security group with enhanced security controls"
+    Description: "Description of the security group"
+    MinLength: 1
+    MaxLength: 255
+
+  # Rest of the parameters remain the same as in the previous version
+  InboundRulesEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: [ "true", "false" ]
+    Description: "Enable or disable inbound rules"
+
+  InboundIpProtocol:
+    Type: String
+    Default: "tcp"
+    AllowedValues: [ "tcp", "udp", "icmp", "icmpv6", "-1" ]
+    Description: "IP protocol for the inbound rule"
+
+  InboundFromPort:
+    Type: Number
+    Default: 443
+    MinValue: -1
+    MaxValue: 65535
+    Description: "Starting port for the inbound rule"
+
+  InboundToPort:
+    Type: Number
+    Default: 443
+    MinValue: -1
+    MaxValue: 65535
+    Description: "Ending port for the inbound rule"
+
+  InboundCidrIp:
+    Type: String
+    Default: "0.0.0.0/0"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9\
+      ]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))\
+      $"
+    ConstraintDescription: "Must be a valid CIDR block format"
+    Description: "CIDR IP range for the inbound rule"
+
+  AllowInternalVpcTraffic:
+    Type: String
+    Default: "false"
+    AllowedValues: [ "true", "false" ]
+    Description: "Allow internal VPC traffic"
+
+  OutboundRulesEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: [ "true", "false" ]
+    Description: "Enable or disable outbound rules"
+
+  EgressIpProtocol:
+    Type: String
+    Default: "-1"
+    AllowedValues: [ "tcp", "udp", "icmp", "icmpv6", "-1" ]
+    Description: "IP protocol for the egress rule"
+
+  EgressFromPort:
+    Type: Number
+    Default: -1
+    MinValue: -1
+    MaxValue: 65535
+    Description: "Starting port for the egress rule"
+
+  EgressToPort:
+    Type: Number
+    Default: -1
+    MinValue: -1
+    MaxValue: 65535
+    Description: "Ending port for the egress rule"
+
+  EgressCidrIp:
+    Type: String
+    Default: "0.0.0.0/0"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9\
+      ]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))\
+      $"
+    ConstraintDescription: "Must be a valid CIDR block format"
+    Description: "CIDR IP range for the egress rule"
+
+  RestrictOutboundTraffic:
+    Type: String
+    Default: "false"
+    AllowedValues: [ "true", "false" ]
+    Description: "Restrict outbound traffic to specific ports and protocols"
+
+Conditions:
+  IsInboundEnabled: !Equals [ !Ref InboundRulesEnabled, "true" ]
+  IsOutboundEnabled: !Equals [ !Ref OutboundRulesEnabled, "true" ]
+  IsInternalVpcTrafficAllowed: !Equals [ !Ref AllowInternalVpcTraffic, "true" ]
+  IsOutboundTrafficRestricted: !Equals [ !Ref RestrictOutboundTraffic, "true" ]
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+
+Resources:
+  CustomSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName: !Sub "${Environment}-${ApplicationName}-${SecurityGroupSuffix}"
+      GroupDescription: !Sub "${SecurityGroupDescription} (${Environment})"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress: !If
+        - IsInboundEnabled
+        - - IpProtocol: !Ref InboundIpProtocol
+            FromPort: !Ref InboundFromPort
+            ToPort: !Ref InboundToPort
+            CidrIp: !Ref InboundCidrIp
+          - !If
+            - IsInternalVpcTrafficAllowed
+            - IpProtocol: "-1"
+              FromPort: -1
+              ToPort: -1
+              CidrIp: !Sub "{{resolve:ssm:/vpc/${VpcId}/cidr}}"
+            - !Ref "AWS::NoValue"
+        - []
+      SecurityGroupEgress: !If
+        - IsOutboundEnabled
+        - !If
+          - IsOutboundTrafficRestricted
+          - - IpProtocol: !Ref EgressIpProtocol
+              FromPort: !Ref EgressFromPort
+              ToPort: !Ref EgressToPort
+              CidrIp: !Ref EgressCidrIp
+          - - IpProtocol: "-1"
+              FromPort: -1
+              ToPort: -1
+              CidrIp: "0.0.0.0/0"
+        - []
+      Tags:
+      - Key: "Name"
+        Value: !Sub "${Environment}-${ApplicationName}-${SecurityGroupSuffix}"
+      - Key: "Environment"
+        Value: !Ref Environment
+      - Key: "Application"
+        Value: !Ref ApplicationName
+      - Key: "Description"
+        Value: !Ref SecurityGroupDescription
+      - Key: "Region"
+        Value: !Ref "AWS::Region"
+      - Key: "CreatedBy"
+        Value: "CloudFormation"
+      - Key: "SecurityLevel"
+        Value: !If [ IsOutboundTrafficRestricted, "restricted", "standard" ]
+      - Key: "LastModified"
+        Value: !Ref "AWS::StackName"
+      - Key: "VpcId"
+        Value: !Ref VpcId
+      - Key: "StackId"
+        Value: !Ref "AWS::StackId"
+      - Key: "ResourceId"
+        Value: !Sub "${Environment}-${ApplicationName}"
+
+Outputs:
+  SecurityGroupId:
+    Description: "Security Group ID"
+    Value: !Ref CustomSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-${Environment}-SecurityGroupId"
+
+  SecurityGroupName:
+    Description: "Security Group Name"
+    Value: !GetAtt CustomSecurityGroup.GroupName
+    Export:
+      Name: !Sub "${AWS::StackName}-${Environment}-SecurityGroupName"
+
+  SecurityGroupFullName:
+    Description: "Complete Security Group Name with Environment"
+    Value: !Sub "${Environment}-${ApplicationName}-${SecurityGroupSuffix}"
+    Export:
+      Name: !Sub "${AWS::StackName}-${Environment}-SecurityGroupFullName"
+
+  VpcId:
+    Description: "VPC ID where the security group is created"
+    Value: !Ref VpcId
+    Export:
+      Name: !Sub "${AWS::StackName}-${Environment}-VpcId"
+
+  SecurityGroupArn:
+    Description: "Security Group ARN"
+    Value: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:securit\
+      y-group/${CustomSecurityGroup}"
+    Export:
+      Name: !Sub "${AWS::StackName}-${Environment}-SecurityGroupArn"

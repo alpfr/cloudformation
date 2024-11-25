@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  SourceBucketName:
+    Type: String
+    Description: Name of the existing source S3 bucket
+  DestinationBucketName:
+    Type: String
+    Description: Name of the existing destination S3 bucket
+  DestinationAccountId:
+    Type: String
+    Description: AWS Account ID where the destination bucket exists
+  SourcePrefix:
+    Type: String
+    Description: Prefix for source bucket objects
+    Default: ''
+  SourceKMSKeyId:
+    Type: String
+    Description: KMS Key ID for source bucket
+  DestinationKMSKeyArn:
+    Type: String
+    Description: KMS Key ARN for destination bucket in GovCloud
+
+Resources:
+  SourceBucketVersioning:
+    Type: AWS::S3::BucketVersioning
+    Properties:
+      Bucket: !Ref SourceBucketName
+      VersioningConfiguration:
+        Status: Enabled
+
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: s3.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: ReplicationPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          # Source bucket permissions
+          - Effect: Allow
+            Action:
+            - s3:GetReplicationConfiguration
+            - s3:ListBucket
+            - s3:GetObjectVersion
+            - s3:GetObjectVersionAcl
+            - s3:GetObjectVersionTagging
+            - s3:ReplicateDelete
+            - s3:ReplicateTags
+            Resource:
+            - !Sub 'arn:aws-us-gov:s3:::${SourceBucketName}'
+            - !Sub 'arn:aws-us-gov:s3:::${SourceBucketName}/*'
+          # Source KMS permissions
+          - Effect: Allow
+            Action:
+            - kms:Decrypt
+            - kms:DescribeKey
+            Resource:
+            - !Sub 'arn:aws-us-gov:kms:${AWS::Region}:${AWS::AccountId}:key/${SourceKMSKeyId}'
+          # Destination bucket permissions
+          - Effect: Allow
+            Action:
+            - s3:ReplicateObject
+            - s3:ReplicateDelete
+            - s3:ReplicateTags
+            - s3:PutObject
+            - s3:PutObjectVersionAcl
+            - s3:PutObjectTagging
+            - s3:GetObjectVersion
+            - s3:GetObjectVersionAcl
+            - s3:GetObjectVersionTagging
+            - s3:ObjectOwnerOverrideToBucketOwner
+            Resource:
+            - !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}'
+            - !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}/*'
+          # Destination KMS permissions
+          - Effect: Allow
+            Action:
+            - kms:Encrypt
+            - kms:GenerateDataKey
+            Resource:
+            - !Ref DestinationKMSKeyArn
+
+  ReplicationConfiguration:
+    Type: AWS::S3::BucketReplication
+    DependsOn: SourceBucketVersioning
+    Properties:
+      Bucket: !Ref SourceBucketName
+      Role: !GetAtt ReplicationRole.Arn
+      Rules:
+      - Status: Enabled
+        Priority: 1
+        DeleteMarkerReplication:
+          Status: Enabled
+        Filter:
+          Prefix: !Ref 'SourcePrefix'
+        Destination:
+          Bucket: !Sub 'arn:aws-us-gov:s3:::${DestinationBucketName}'
+          Account: !Ref DestinationAccountId
+          StorageClass: STANDARD
+          AccessControlTranslation:
+            Owner: Destination
+          EncryptionConfiguration:
+            ReplicaKmsKeyID: !Ref DestinationKMSKeyArn
+        Metrics:
+          EventThreshold:
+            Minutes: 15
+          Status: Enabled
+        ReplicationTimeValue:
+          Time:
+            Minutes: 15
+          Status: Enabled
+        SourceSelectionCriteria:
+          SseKmsEncryptedObjects:
+            Status: Enabled
+
+Outputs:
+  ReplicationRoleArn:
+    Value: !GetAtt ReplicationRole.Arn
+    Description: Replication role ARN in GovCloud
